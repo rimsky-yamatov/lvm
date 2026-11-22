@@ -81,6 +81,31 @@ void lvm_set_host(lvm_vm *vm, unsigned id, lvm_host_fn fn, void *ud)
 #define CASE(x) case x:
 #define NEXT() break
 
+static int num(lvm_value v, double *d)
+{
+    if (lvm_is_float(v)) { *d = lvm_as_float(v); return 1; }
+    if (lvm_is_int(v))   { *d = (double)lvm_as_int(v); return 1; }
+    return 0;
+}
+
+/*
+ * Binary arithmetic. int op int stays int (promoted to float when the
+ * result no longer fits 48 bits); anything else numeric becomes float.
+ */
+#define ARITH(INT_PRE, INT_EXPR, FLT_EXPR) do {                              \
+    lvm_value x_ = R[LVM_B(i)], y_ = R[LVM_C(i)];                            \
+    if (lvm_is_int(x_) && lvm_is_int(y_)) {                                  \
+        int64_t a_ = lvm_as_int(x_), b_ = lvm_as_int(y_), r_;                \
+        INT_PRE;                                                             \
+        r_ = (INT_EXPR);                                                     \
+        R[LVM_A(i)] = lvm_fits_int(r_) ? lvm_int(r_) : lvm_float((double)r_);\
+    } else {                                                                 \
+        double a_, b_;                                                       \
+        if (!num(x_, &a_) || !num(y_, &b_)) { st = LVM_ERR_TYPE; goto fail; }\
+        R[LVM_A(i)] = lvm_float(FLT_EXPR);                                   \
+    }                                                                        \
+} while (0)
+
 lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
                    const lvm_value *args, int nargs, lvm_value *result)
 {
@@ -125,6 +150,45 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     CASE(OP_LDBOOL)
         R[LVM_A(i)] = lvm_bool((int)LVM_B(i));
         NEXT();
+    CASE(OP_ADD)
+        ARITH((void)0, a_ + b_, a_ + b_);
+        NEXT();
+    CASE(OP_SUB)
+        ARITH((void)0, a_ - b_, a_ - b_);
+        NEXT();
+    CASE(OP_MUL) {
+        lvm_value x = R[LVM_B(i)], y = R[LVM_C(i)];
+        if (lvm_is_int(x) && lvm_is_int(y)) {
+            int64_t p = lvm_as_int(x), q = lvm_as_int(y);
+            double d = (double)p * (double)q;
+            /* |p*q| < 1e14 < 2^47: exact in int64 and fits 48 bits */
+            R[LVM_A(i)] = (d > -1.0e14 && d < 1.0e14) ? lvm_int(p * q) : lvm_float(d);
+        } else {
+            double p, q;
+            if (!num(x, &p) || !num(y, &q)) { st = LVM_ERR_TYPE; goto fail; }
+            R[LVM_A(i)] = lvm_float(p * q);
+        }
+        NEXT();
+    }
+    CASE(OP_DIV)
+        ARITH(if (b_ == 0) { st = LVM_ERR_DIVZERO; goto fail; }, a_ / b_, a_ / b_);
+        NEXT();
+    CASE(OP_MOD)
+        ARITH(if (b_ == 0) { st = LVM_ERR_DIVZERO; goto fail; }, a_ % b_, fmod(a_, b_));
+        NEXT();
+    CASE(OP_NEG) {
+        lvm_value x = R[LVM_B(i)];
+        if (lvm_is_int(x)) {
+            int64_t r = -lvm_as_int(x);
+            R[LVM_A(i)] = lvm_fits_int(r) ? lvm_int(r) : lvm_float((double)r);
+        } else if (lvm_is_float(x)) {
+            R[LVM_A(i)] = lvm_float(-lvm_as_float(x));
+        } else {
+            st = LVM_ERR_TYPE;
+            goto fail;
+        }
+        NEXT();
+    }
     LVM_DISPATCH_END
 
 fail:
