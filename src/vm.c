@@ -266,6 +266,28 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     CASE(OP_JF)
         if (!lvm_is_truthy(R[LVM_A(i)])) pc += LVM_SBX(i);
         NEXT();
+    CASE(OP_CALL) {
+        /* args are already in R[A..]; the callee's window starts there */
+        const lvm_func *callee = &m->funcs[LVM_BX(i)];
+        uint32_t nbase = base + LVM_A(i);
+
+        if (depth >= vm->max_frames || nbase > vm->stack_slots ||
+            callee->nregs > vm->stack_slots - nbase) {
+            st = LVM_ERR_STACK;
+            goto fail;
+        }
+        vm->frames[depth].fn = fn;
+        vm->frames[depth].pc = pc;
+        vm->frames[depth].base = base;
+        depth++;
+
+        fn = callee;
+        pc = callee->code;
+        base = nbase;
+        R = vm->stack + base;
+        for (k = callee->nparams; k < callee->nregs; k++) R[k] = lvm_nil();
+        NEXT();
+    }
     LVM_DISPATCH_END
 
 fail:
