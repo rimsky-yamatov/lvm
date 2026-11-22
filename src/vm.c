@@ -288,6 +288,13 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         for (k = callee->nparams; k < callee->nregs; k++) R[k] = lvm_nil();
         NEXT();
     }
+    CASE(OP_HOST) {
+        const host_slot *h = &vm->host[LVM_C(i)];
+        if (!h->fn) { st = LVM_ERR_HOST; goto fail; }
+        st = h->fn(h->ud, &R[LVM_A(i)], (int)LVM_B(i));
+        if (st != LVM_OK) goto fail;
+        NEXT();
+    }
     LVM_DISPATCH_END
 
 fail:
