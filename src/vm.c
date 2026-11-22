@@ -122,6 +122,28 @@ static int64_t asr(int64_t a, unsigned n)
     R[LVM_A(i)] = lvm_int(EXPR);                                             \
 } while (0)
 
+static int veq(lvm_value x, lvm_value y)
+{
+    double a, b;
+    if (lvm_is_int(x) && lvm_is_int(y)) return x == y;
+    if (num(x, &a) && num(y, &b)) return a == b;
+    return x == y;
+}
+
+/* Comparison skips the following JMP unless the result equals A. */
+#define CMP(OP) do {                                                         \
+    lvm_value x_ = R[LVM_B(i)], y_ = R[LVM_C(i)];                            \
+    int c_;                                                                  \
+    if (lvm_is_int(x_) && lvm_is_int(y_)) {                                  \
+        c_ = lvm_as_int(x_) OP lvm_as_int(y_);                               \
+    } else {                                                                 \
+        double a_, b_;                                                       \
+        if (!num(x_, &a_) || !num(y_, &b_)) { st = LVM_ERR_TYPE; goto fail; }\
+        c_ = a_ OP b_;                                                       \
+    }                                                                        \
+    if (c_ != (int)LVM_A(i)) pc++;                                           \
+} while (0)
+
 lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
                    const lvm_value *args, int nargs, lvm_value *result)
 {
@@ -225,6 +247,15 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         NEXT();
     CASE(OP_SHR)
         BITOP(asr(a_, (unsigned)(b_ & 63)));
+        NEXT();
+    CASE(OP_EQ)
+        if (veq(R[LVM_B(i)], R[LVM_C(i)]) != (int)LVM_A(i)) pc++;
+        NEXT();
+    CASE(OP_LT)
+        CMP(<);
+        NEXT();
+    CASE(OP_LE)
+        CMP(<=);
         NEXT();
     LVM_DISPATCH_END
 
