@@ -183,6 +183,120 @@ static void test_bitwise(void)
     CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 8);
 }
 
+/* ---- control flow ---- */
+
+static void test_loop(void)
+{
+    lvm_value r;
+
+    /* sum 1..100 */
+    begin(0, 1, 0);
+    FUNC(0, 4,
+         LVM_ASBX(OP_LDI, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 1),
+         LVM_ASBX(OP_LDI, 2, 100),
+         LVM_ASBX(OP_LDI, 3, 1),
+         LVM_ABC(OP_ADD, 0, 0, 1),
+         LVM_ABC(OP_ADD, 1, 1, 3),
+         LVM_ABC(OP_LE, 1, 1, 2),
+         LVM_ASBX(OP_JMP, 0, -4),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 5050);
+}
+
+static void test_fib(void)
+{
+    lvm_value r;
+
+    begin(0, 2, 0);
+    FUNC(0, 2,
+         LVM_ASBX(OP_LDI, 0, 20),
+         LVM_ABX(OP_CALL, 0, 1),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    FUNC(1, 5,
+         LVM_ASBX(OP_LDI, 1, 2),
+         LVM_ABC(OP_LT, 0, 0, 1),
+         LVM_ASBX(OP_JMP, 0, 1),
+         LVM_ABC(OP_RET, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 4, 1),
+         LVM_ABC(OP_SUB, 2, 0, 4),
+         LVM_ABX(OP_CALL, 2, 1),
+         LVM_ABC(OP_SUB, 3, 0, 1),
+         LVM_ABX(OP_CALL, 3, 1),
+         LVM_ABC(OP_ADD, 0, 2, 3),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 6765);
+}
+
+static void test_stack_overflow(void)
+{
+    lvm_value r;
+
+    begin(0, 1, 0);
+    FUNC(0, 1, LVM_ABX(OP_CALL, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_ERR_STACK);
+}
+
+static void test_equality_and_branches(void)
+{
+    lvm_value r;
+
+    /* 1 == 1.0 */
+    begin(1, 1, 0);
+    k_flt(1.0);
+    FUNC(0, 3,
+         LVM_ASBX(OP_LDI, 0, 1),
+         LVM_ABX(OP_LDK, 1, 0),
+         LVM_ABC(OP_EQ, 1, 0, 1),
+         LVM_ASBX(OP_JMP, 0, 2),
+         LVM_ABC(OP_LDBOOL, 2, 0, 0),
+         LVM_ABC(OP_RET, 2, 0, 0),
+         LVM_ABC(OP_LDBOOL, 2, 1, 0),
+         LVM_ABC(OP_RET, 2, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_is_bool(r) && lvm_as_bool(r) == 1);
+
+    /* nil is falsy */
+    begin(0, 1, 0);
+    FUNC(0, 2,
+         LVM_ABC(OP_LDNIL, 0, 0, 0),
+         LVM_ASBX(OP_JF, 0, 2),
+         LVM_ASBX(OP_LDI, 1, 0),
+         LVM_ABC(OP_RET, 1, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 1),
+         LVM_ABC(OP_RET, 1, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 1);
+
+    /* comparing nil with a number is a type error */
+    begin(0, 1, 0);
+    FUNC(0, 3,
+         LVM_ABC(OP_LDNIL, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 1),
+         LVM_ABC(OP_LT, 1, 0, 1),
+         LVM_ASBX(OP_JMP, 0, 0),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_ERR_TYPE);
+}
+
+static void test_host(void)
+{
+    lvm_value r;
+
+    begin(0, 1, 0);
+    FUNC(0, 1,
+         LVM_ASBX(OP_LDI, 0, 21),
+         LVM_ABC(OP_HOST, 0, 1, 0),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 42);
+
+    /* unregistered host id */
+    begin(0, 1, 0);
+    FUNC(0, 1,
+         LVM_ASBX(OP_LDI, 0, 21),
+         LVM_ABC(OP_HOST, 0, 1, 7),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_ERR_HOST);
+}
+
 int main(void)
 {
     test_int_arith();
@@ -190,6 +304,12 @@ int main(void)
     test_int_overflow_promotes();
     test_arith_errors();
     test_bitwise();
+
+    test_loop();
+    test_fib();
+    test_stack_overflow();
+    test_equality_and_branches();
+    test_host();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
