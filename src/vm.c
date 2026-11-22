@@ -75,11 +75,23 @@ void lvm_set_host(lvm_vm *vm, unsigned id, lvm_host_fn fn, void *ud)
     vm->host[id].ud = ud;
 }
 
-/* dispatch: one switch per instruction */
-#define LVM_DISPATCH_BEGIN for (;;) { i = *pc++; switch (LVM_OP(i)) {
-#define LVM_DISPATCH_END default: st = LVM_ERR_VERIFY; goto fail; } }
-#define CASE(x) case x:
-#define NEXT() break
+/*
+ * Dispatch: threaded code via computed goto where the compiler has it,
+ * a plain switch everywhere else (define LVM_NO_COMPUTED_GOTO to force it).
+ */
+#if defined(__GNUC__) && !defined(LVM_NO_COMPUTED_GOTO)
+#  define LVM_CGOTO 1
+#  define NEXT() do { i = *pc++; goto *dispatch[LVM_OP(i)]; } while (0)
+#  define CASE(x) L_##x:
+#  define LVM_DISPATCH_BEGIN NEXT();
+#  define LVM_DISPATCH_END
+#else
+#  define LVM_CGOTO 0
+#  define LVM_DISPATCH_BEGIN for (;;) { i = *pc++; switch (LVM_OP(i)) {
+#  define LVM_DISPATCH_END default: st = LVM_ERR_VERIFY; goto fail; } }
+#  define CASE(x) case x:
+#  define NEXT() break
+#endif
 
 static int num(lvm_value v, double *d)
 {
@@ -152,6 +164,36 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     lvm_value *R = vm->stack;
     uint32_t base = 0, depth = 0, i = 0, k;
     lvm_status st = LVM_OK;
+#if LVM_CGOTO
+    static const void *const dispatch[OP_COUNT] = {
+        [OP_MOV] = &&L_OP_MOV,
+        [OP_LDK] = &&L_OP_LDK,
+        [OP_LDI] = &&L_OP_LDI,
+        [OP_LDNIL] = &&L_OP_LDNIL,
+        [OP_LDBOOL] = &&L_OP_LDBOOL,
+        [OP_ADD] = &&L_OP_ADD,
+        [OP_SUB] = &&L_OP_SUB,
+        [OP_MUL] = &&L_OP_MUL,
+        [OP_DIV] = &&L_OP_DIV,
+        [OP_MOD] = &&L_OP_MOD,
+        [OP_NEG] = &&L_OP_NEG,
+        [OP_AND] = &&L_OP_AND,
+        [OP_OR] = &&L_OP_OR,
+        [OP_XOR] = &&L_OP_XOR,
+        [OP_NOT] = &&L_OP_NOT,
+        [OP_SHL] = &&L_OP_SHL,
+        [OP_SHR] = &&L_OP_SHR,
+        [OP_EQ] = &&L_OP_EQ,
+        [OP_LT] = &&L_OP_LT,
+        [OP_LE] = &&L_OP_LE,
+        [OP_JMP] = &&L_OP_JMP,
+        [OP_JT] = &&L_OP_JT,
+        [OP_JF] = &&L_OP_JF,
+        [OP_CALL] = &&L_OP_CALL,
+        [OP_RET] = &&L_OP_RET,
+        [OP_HOST] = &&L_OP_HOST
+    };
+#endif
 
     if (nargs < 0 || (unsigned)nargs != fn->nparams) return LVM_ERR_ARGS;
     if (fn->nregs > vm->stack_slots) return LVM_ERR_STACK;
