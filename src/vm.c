@@ -110,6 +110,21 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         R = vm->stack + base;
         NEXT();
     }
+    CASE(OP_MOV)
+        R[LVM_A(i)] = R[LVM_B(i)];
+        NEXT();
+    CASE(OP_LDK)
+        R[LVM_A(i)] = m->consts[LVM_BX(i)];
+        NEXT();
+    CASE(OP_LDI)
+        R[LVM_A(i)] = lvm_int(LVM_SBX(i));
+        NEXT();
+    CASE(OP_LDNIL)
+        for (k = 0; k <= LVM_B(i); k++) R[LVM_A(i) + k] = lvm_nil();
+        NEXT();
+    CASE(OP_LDBOOL)
+        R[LVM_A(i)] = lvm_bool((int)LVM_B(i));
+        NEXT();
     LVM_DISPATCH_END
 
 fail:
