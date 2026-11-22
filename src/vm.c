@@ -257,6 +257,15 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     CASE(OP_LE)
         CMP(<=);
         NEXT();
+    CASE(OP_JMP)
+        pc += LVM_SBX(i);
+        NEXT();
+    CASE(OP_JT)
+        if (lvm_is_truthy(R[LVM_A(i)])) pc += LVM_SBX(i);
+        NEXT();
+    CASE(OP_JF)
+        if (!lvm_is_truthy(R[LVM_A(i)])) pc += LVM_SBX(i);
+        NEXT();
     LVM_DISPATCH_END
 
 fail:
