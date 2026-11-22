@@ -297,6 +297,57 @@ static void test_host(void)
     CHECK(run(&r) == LVM_ERR_HOST);
 }
 
+/* ---- loader and verifier ---- */
+
+static void test_bad_container(void)
+{
+    begin(0, 1, 0);
+    FUNC(0, 1, LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_OK);
+
+    bc[0] = 'X';
+    CHECK(load_only() == LVM_ERR_FORMAT);
+    bc[0] = 'L';
+
+    bn--;
+    CHECK(load_only() == LVM_ERR_FORMAT); /* truncated */
+    bn++;
+
+    u8(0);
+    CHECK(load_only() == LVM_ERR_FORMAT); /* trailing bytes */
+}
+
+static void test_verifier_rejects(void)
+{
+    begin(0, 1, 0);
+    FUNC(0, 2, LVM_ABC(OP_MOV, 5, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* register out of range */
+
+    begin(0, 1, 0);
+    FUNC(0, 1, LVM_ASBX(OP_JMP, 0, 100));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* jump out of range */
+
+    begin(0, 1, 0);
+    FUNC(0, 1, LVM_ASBX(OP_LDI, 0, 1));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* falls off the end */
+
+    begin(0, 1, 0);
+    FUNC(0, 2, LVM_ABC(OP_EQ, 1, 0, 1), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* compare without jump */
+
+    begin(0, 1, 0);
+    FUNC(0, 1, LVM_ABX(OP_LDK, 0, 5), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* constant out of range */
+
+    begin(0, 1, 0);
+    FUNC(0, 1, LVM_ABX(OP_CALL, 0, 9), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* function out of range */
+
+    begin(0, 1, 0);
+    FUNC(0, 1, 0xFFu, LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* unknown opcode */
+}
+
 int main(void)
 {
     test_int_arith();
@@ -310,6 +361,9 @@ int main(void)
     test_stack_overflow();
     test_equality_and_branches();
     test_host();
+
+    test_bad_container();
+    test_verifier_rejects();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
