@@ -106,6 +106,22 @@ static int num(lvm_value v, double *d)
     }                                                                        \
 } while (0)
 
+/* arithmetic shift right without relying on implementation-defined behaviour */
+static int64_t asr(int64_t a, unsigned n)
+{
+    return a < 0 ? (int64_t)~(~(uint64_t)a >> n) : (int64_t)((uint64_t)a >> n);
+}
+
+/* Bitwise ops work on ints only; results wrap to 48 bits. */
+#define BITOP(EXPR) do {                                                     \
+    lvm_value x_ = R[LVM_B(i)], y_ = R[LVM_C(i)];                            \
+    int64_t a_, b_;                                                          \
+    if (!lvm_is_int(x_) || !lvm_is_int(y_)) { st = LVM_ERR_TYPE; goto fail; }\
+    a_ = lvm_as_int(x_);                                                     \
+    b_ = lvm_as_int(y_);                                                     \
+    R[LVM_A(i)] = lvm_int(EXPR);                                             \
+} while (0)
+
 lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
                    const lvm_value *args, int nargs, lvm_value *result)
 {
@@ -189,6 +205,27 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         }
         NEXT();
     }
+    CASE(OP_AND)
+        BITOP(a_ & b_);
+        NEXT();
+    CASE(OP_OR)
+        BITOP(a_ | b_);
+        NEXT();
+    CASE(OP_XOR)
+        BITOP(a_ ^ b_);
+        NEXT();
+    CASE(OP_NOT) {
+        lvm_value x = R[LVM_B(i)];
+        if (!lvm_is_int(x)) { st = LVM_ERR_TYPE; goto fail; }
+        R[LVM_A(i)] = lvm_int(~lvm_as_int(x));
+        NEXT();
+    }
+    CASE(OP_SHL)
+        BITOP((int64_t)((uint64_t)a_ << (b_ & 63)));
+        NEXT();
+    CASE(OP_SHR)
+        BITOP(asr(a_, (unsigned)(b_ & 63)));
+        NEXT();
     LVM_DISPATCH_END
 
 fail:
