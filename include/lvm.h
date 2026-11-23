@@ -22,7 +22,8 @@ typedef enum {
     LVM_ERR_STACK,
     LVM_ERR_TYPE,
     LVM_ERR_DIVZERO,
-    LVM_ERR_HOST
+    LVM_ERR_HOST,
+    LVM_ERR_BOUNDS
 } lvm_status;
 
 /* realloc-like allocator; new_size == 0 frees */
@@ -73,6 +74,24 @@ void lvm_set_host(lvm_vm *vm, unsigned id, lvm_host_fn fn, void *ud);
 /* run the module's entry function */
 lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
                    const lvm_value *args, int nargs, lvm_value *result);
+
+/* ---- heap values ----
+ *
+ * Strings, arrays and maps live on a garbage-collected heap owned by the
+ * vm. A heap value stays valid while it is reachable from a register. A
+ * value handed back by lvm_run is valid until the next lvm_run, lvm_gc or
+ * allocation on that vm. Host functions that allocate may trigger a
+ * collection: store each new value into args[] before allocating again.
+ */
+
+int lvm_is_string(lvm_value v);
+const char *lvm_string_data(lvm_value v, size_t *len); /* NULL if not a string */
+lvm_value lvm_new_string(lvm_vm *vm, const char *s, size_t len); /* nil on failure */
+const char *lvm_type_name(lvm_value v);
+
+lvm_status lvm_gc(lvm_vm *vm);
+size_t lvm_heap_bytes(const lvm_vm *vm);
+void lvm_set_gc_threshold(lvm_vm *vm, size_t min_bytes);
 
 #ifdef __cplusplus
 }

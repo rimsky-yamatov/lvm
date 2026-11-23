@@ -31,7 +31,8 @@ const char *lvm_strerror(lvm_status st)
         "stack overflow",
         "type error",
         "division by zero",
-        "host function error"
+        "host function error",
+        "index out of bounds"
     };
     return (unsigned)st < sizeof msg / sizeof msg[0] ? msg[st] : "unknown error";
 }
