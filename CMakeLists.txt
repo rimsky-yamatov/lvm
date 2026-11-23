@@ -20,7 +20,8 @@ add_library(lvm STATIC
   src/vm.c
   src/object.c
   src/gc.c
-  src/container.c)
+  src/container.c
+  src/closure.c)
 target_include_directories(lvm PUBLIC include PRIVATE src)
 if(LVM_NO_COMPUTED_GOTO)
   target_compile_definitions(lvm PRIVATE LVM_NO_COMPUTED_GOTO)
