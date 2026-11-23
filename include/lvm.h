@@ -23,7 +23,8 @@ typedef enum {
     LVM_ERR_TYPE,
     LVM_ERR_DIVZERO,
     LVM_ERR_HOST,
-    LVM_ERR_BOUNDS
+    LVM_ERR_BOUNDS,
+    LVM_ERR_ASM
 } lvm_status;
 
 /* realloc-like allocator; new_size == 0 frees */
@@ -101,6 +102,18 @@ const char *lvm_type_name(lvm_value v);
 lvm_status lvm_gc(lvm_vm *vm);
 size_t lvm_heap_bytes(const lvm_vm *vm);
 void lvm_set_gc_threshold(lvm_vm *vm, size_t min_bytes);
+
+/* ---- assembler ----
+ *
+ * Turns assembly text (see docs/asm.md) into a bytecode file image that
+ * lvm_load accepts. The result is verified. On failure err receives a
+ * one-line message, e.g. "line 3: unknown instruction 'FOO'", and the
+ * status is LVM_ERR_ASM (syntax) or LVM_ERR_VERIFY (rejected by the
+ * verifier). Release the image with lvm_assemble_free.
+ */
+lvm_status lvm_assemble(const lvm_allocator *a, const char *src, size_t len,
+                        uint8_t **out, size_t *out_len, char *err, size_t err_size);
+void lvm_assemble_free(const lvm_allocator *a, uint8_t *buf, size_t len);
 
 #ifdef __cplusplus
 }

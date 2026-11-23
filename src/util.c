@@ -32,7 +32,8 @@ const char *lvm_strerror(lvm_status st)
         "type error",
         "division by zero",
         "host function error",
-        "index out of bounds"
+        "index out of bounds",
+        "assembly error"
     };
     return (unsigned)st < sizeof msg / sizeof msg[0] ? msg[st] : "unknown error";
 }
