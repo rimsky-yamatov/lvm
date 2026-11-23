@@ -140,7 +140,7 @@ static int veq(lvm_value x, lvm_value y)
 } while (0)
 
 /* publish the current frame so the collector can find every live register */
-#define SYNC() do { vm->cur_fn = fn; vm->cur_base = base; vm->depth = depth; } while (0)
+#define SYNC() do { vm->cur_fn = fn; vm->cur_cl = cl; vm->cur_base = base; vm->depth = depth; } while (0)
 
 lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
                    const lvm_value *args, int nargs, lvm_value *result)
@@ -148,6 +148,7 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     const lvm_func *fn = &m->funcs[m->entry];
     const uint32_t *pc = fn->code;
     lvm_value *R = vm->stack;
+    lvm_closure *cl = NULL;
     uint32_t base = 0, depth = 0, i = 0, k;
     lvm_status st = LVM_OK;
 #if LVM_CGOTO
@@ -194,16 +195,18 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     LVM_DISPATCH_BEGIN
     CASE(OP_RET) {
         lvm_value v = R[LVM_A(i)];
+        if (vm->open) lvm_upvals_close(vm, R);
         if (depth == 0) {
             if (result) *result = v;
             vm->cur_fn = NULL;
             return LVM_OK;
         }
-        R[0] = v; /* callee R[0] aliases the caller's call register */
         depth--;
+        vm->stack[vm->frames[depth].ret] = v;
         fn = vm->frames[depth].fn;
         pc = vm->frames[depth].pc;
         base = vm->frames[depth].base;
+        cl = vm->frames[depth].cl;
         R = vm->stack + base;
         NEXT();
     }
@@ -313,9 +316,12 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         vm->frames[depth].fn = fn;
         vm->frames[depth].pc = pc;
         vm->frames[depth].base = base;
+        vm->frames[depth].cl = cl;
+        vm->frames[depth].ret = nbase;
         depth++;
 
         fn = callee;
+        cl = NULL;
         pc = callee->code;
         base = nbase;
         R = vm->stack + base;
@@ -367,6 +373,7 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     LVM_DISPATCH_END
 
 fail:
+    if (vm->open) lvm_upvals_close(vm, vm->stack);
     vm->cur_fn = NULL;
     return st;
 }
