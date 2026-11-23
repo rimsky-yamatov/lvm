@@ -2,7 +2,8 @@ CC     ?= cc
 CFLAGS ?= -O2
 override CFLAGS += -std=c99 -Wall -Wextra -Iinclude
 
-LIB_SRC = src/util.c src/loader.c src/verify.c src/vm.c
+LIB_SRC = src/util.c src/loader.c src/verify.c src/vm.c \
+          src/object.c src/gc.c src/container.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 all: liblvm.a lvmi
