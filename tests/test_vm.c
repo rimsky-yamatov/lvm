@@ -46,6 +46,14 @@ static void k_flt(double d)
     u64(u);
 }
 
+static void k_str(const char *s)
+{
+    size_t n = strlen(s), i;
+    u8(4);
+    u32((uint32_t)n);
+    for (i = 0; i < n; i++) u8((unsigned char)s[i]);
+}
+
 static void func(unsigned np, unsigned nr, const uint32_t *code, uint32_t n)
 {
     uint32_t i;
@@ -70,6 +78,16 @@ static lvm_status host_double(void *ud, lvm_value *args, int argc)
     return LVM_OK;
 }
 
+static lvm_status host_str(void *ud, lvm_value *args, int argc)
+{
+    (void)argc;
+    args[0] = lvm_new_string((lvm_vm *)ud, "hi!", 3);
+    return lvm_is_nil(args[0]) ? LVM_ERR_MEM : LVM_OK;
+}
+
+static size_t g_gc_min; /* when set, run() uses this gc threshold */
+static size_t g_heap;   /* heap size right after the last run() */
+
 static lvm_status run(lvm_value *out)
 {
     lvm_module m;
@@ -79,7 +97,10 @@ static lvm_status run(lvm_value *out)
     if (st != LVM_OK) return st;
     vm = lvm_new(NULL, 1024, 64);
     lvm_set_host(vm, 0, host_double, NULL);
+    lvm_set_host(vm, 1, host_str, vm);
+    if (g_gc_min) lvm_set_gc_threshold(vm, g_gc_min);
     st = lvm_run(vm, &m, NULL, 0, out);
+    g_heap = lvm_heap_bytes(vm);
     lvm_free(vm);
     lvm_module_free(&m);
     return st;
@@ -348,6 +369,55 @@ static void test_verifier_rejects(void)
     CHECK(load_only() == LVM_ERR_VERIFY); /* unknown opcode */
 }
 
+/* ---- strings ---- */
+
+static void test_strings(void)
+{
+    lvm_value r;
+
+    begin(3, 1, 0);
+    k_str("hello");
+    k_str("x");
+    k_str("x");
+    FUNC(0, 4, LVM_ABX(OP_LDK, 0, 0), LVM_ABC(OP_LEN, 1, 0, 0), LVM_ABC(OP_RET, 1, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 5);
+
+    /* separate constants with equal content compare equal */
+    begin(3, 1, 0);
+    k_str("hello");
+    k_str("x");
+    k_str("x");
+    FUNC(0, 3,
+         LVM_ABX(OP_LDK, 0, 1),
+         LVM_ABX(OP_LDK, 1, 2),
+         LVM_ABC(OP_EQ, 1, 0, 1),
+         LVM_ASBX(OP_JMP, 0, 2),
+         LVM_ABC(OP_LDBOOL, 2, 0, 0),
+         LVM_ABC(OP_RET, 2, 0, 0),
+         LVM_ABC(OP_LDBOOL, 2, 1, 0),
+         LVM_ABC(OP_RET, 2, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_bool(r) == 1);
+
+    /* indexing yields bytes */
+    begin(1, 1, 0);
+    k_str("hello");
+    FUNC(0, 3, LVM_ABX(OP_LDK, 0, 0), LVM_ASBX(OP_LDI, 1, 1),
+         LVM_ABC(OP_GET, 2, 0, 1), LVM_ABC(OP_RET, 2, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 'e');
+
+    /* strings are immutable */
+    begin(1, 1, 0);
+    k_str("abc");
+    FUNC(0, 3, LVM_ABX(OP_LDK, 0, 0), LVM_ASBX(OP_LDI, 1, 0), LVM_ASBX(OP_LDI, 2, 1),
+         LVM_ABC(OP_SET, 0, 1, 2), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_ERR_TYPE);
+
+    /* host-created string */
+    begin(0, 1, 0);
+    FUNC(0, 2, LVM_ABC(OP_HOST, 0, 0, 1), LVM_ABC(OP_LEN, 1, 0, 0), LVM_ABC(OP_RET, 1, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 3);
+}
+
 int main(void)
 {
     test_int_arith();
@@ -364,6 +434,8 @@ int main(void)
 
     test_bad_container();
     test_verifier_rejects();
+
+    test_strings();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
