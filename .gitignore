@@ -2,3 +2,4 @@
 *.a
 /lvmi
 /tests/test_vm
+/build/
