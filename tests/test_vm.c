@@ -418,6 +418,143 @@ static void test_strings(void)
     CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 3);
 }
 
+/* ---- arrays and maps ---- */
+
+static void test_arrays(void)
+{
+    lvm_value r;
+
+    begin(0, 1, 0);
+    FUNC(0, 7,
+         LVM_ABC(OP_NEWARR, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 0), LVM_ASBX(OP_LDI, 2, 10), LVM_ABC(OP_SET, 0, 1, 2),
+         LVM_ASBX(OP_LDI, 1, 1), LVM_ASBX(OP_LDI, 2, 20), LVM_ABC(OP_SET, 0, 1, 2),
+         LVM_ASBX(OP_LDI, 1, 0), LVM_ABC(OP_GET, 3, 0, 1),
+         LVM_ASBX(OP_LDI, 1, 1), LVM_ABC(OP_GET, 4, 0, 1),
+         LVM_ABC(OP_ADD, 5, 3, 4),
+         LVM_ABC(OP_LEN, 6, 0, 0),
+         LVM_ABC(OP_MUL, 5, 5, 6),
+         LVM_ABC(OP_RET, 5, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 60);
+
+    /* reading past the end */
+    begin(0, 1, 0);
+    FUNC(0, 3, LVM_ABC(OP_NEWARR, 0, 0, 0), LVM_ASBX(OP_LDI, 1, 5),
+         LVM_ABC(OP_GET, 2, 0, 1), LVM_ABC(OP_RET, 2, 0, 0));
+    CHECK(run(&r) == LVM_ERR_BOUNDS);
+
+    /* writing beyond len (only len itself appends) */
+    begin(0, 1, 0);
+    FUNC(0, 3, LVM_ABC(OP_NEWARR, 0, 0, 0), LVM_ASBX(OP_LDI, 1, 3), LVM_ASBX(OP_LDI, 2, 1),
+         LVM_ABC(OP_SET, 0, 1, 2), LVM_ABC(OP_RET, 2, 0, 0));
+    CHECK(run(&r) == LVM_ERR_BOUNDS);
+
+    /* indexing a non-container */
+    begin(0, 1, 0);
+    FUNC(0, 3, LVM_ASBX(OP_LDI, 0, 1), LVM_ASBX(OP_LDI, 1, 0),
+         LVM_ABC(OP_GET, 2, 0, 1), LVM_ABC(OP_RET, 2, 0, 0));
+    CHECK(run(&r) == LVM_ERR_TYPE);
+
+    /* an array can grow well past its initial capacity */
+    begin(0, 1, 0);
+    FUNC(0, 5,
+         LVM_ABC(OP_NEWARR, 0, 2, 0),
+         LVM_ASBX(OP_LDI, 1, 0), LVM_ASBX(OP_LDI, 2, 1000), LVM_ASBX(OP_LDI, 3, 1),
+         LVM_ABC(OP_SET, 0, 1, 1),
+         LVM_ABC(OP_ADD, 1, 1, 3),
+         LVM_ABC(OP_LT, 1, 1, 2),
+         LVM_ASBX(OP_JMP, 0, -4),
+         LVM_ABC(OP_LEN, 4, 0, 0),
+         LVM_ABC(OP_RET, 4, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 1000);
+}
+
+static void test_maps(void)
+{
+    lvm_value r;
+
+    /* string keys compare by content */
+    begin(3, 1, 0);
+    k_str("a");
+    k_str("b");
+    k_str("a");
+    FUNC(0, 6,
+         LVM_ABC(OP_NEWMAP, 0, 0, 0),
+         LVM_ABX(OP_LDK, 1, 0), LVM_ASBX(OP_LDI, 2, 1), LVM_ABC(OP_SET, 0, 1, 2),
+         LVM_ABX(OP_LDK, 1, 1), LVM_ASBX(OP_LDI, 2, 2), LVM_ABC(OP_SET, 0, 1, 2),
+         LVM_ABX(OP_LDK, 1, 2), LVM_ABC(OP_GET, 3, 0, 1),
+         LVM_ABC(OP_LEN, 4, 0, 0),
+         LVM_ASBX(OP_LDI, 5, 100),
+         LVM_ABC(OP_MUL, 3, 3, 5),
+         LVM_ABC(OP_ADD, 3, 3, 4),
+         LVM_ABC(OP_RET, 3, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 102);
+
+    /* assigning nil removes the key; missing keys read as nil */
+    begin(1, 1, 0);
+    k_str("a");
+    FUNC(0, 5,
+         LVM_ABC(OP_NEWMAP, 0, 0, 0),
+         LVM_ABX(OP_LDK, 1, 0), LVM_ASBX(OP_LDI, 2, 1), LVM_ABC(OP_SET, 0, 1, 2),
+         LVM_ABC(OP_LDNIL, 2, 0, 0), LVM_ABC(OP_SET, 0, 1, 2),
+         LVM_ABC(OP_LEN, 3, 0, 0),
+         LVM_ABC(OP_GET, 4, 0, 1),
+         LVM_ABC(OP_RET, 3, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 0);
+
+    begin(1, 1, 0);
+    k_str("a");
+    FUNC(0, 5,
+         LVM_ABC(OP_NEWMAP, 0, 0, 0),
+         LVM_ABX(OP_LDK, 1, 0), LVM_ASBX(OP_LDI, 2, 1), LVM_ABC(OP_SET, 0, 1, 2),
+         LVM_ABC(OP_LDNIL, 2, 0, 0), LVM_ABC(OP_SET, 0, 1, 2),
+         LVM_ABC(OP_GET, 4, 0, 1),
+         LVM_ABC(OP_RET, 4, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_is_nil(r));
+
+    /* 1 and 1.0 are the same key */
+    begin(1, 1, 0);
+    k_flt(1.0);
+    FUNC(0, 4,
+         LVM_ABC(OP_NEWMAP, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 1), LVM_ASBX(OP_LDI, 2, 7), LVM_ABC(OP_SET, 0, 1, 2),
+         LVM_ABX(OP_LDK, 1, 0), LVM_ABC(OP_GET, 3, 0, 1),
+         LVM_ABC(OP_RET, 3, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 7);
+
+    /* nil is not a valid key */
+    begin(0, 1, 0);
+    FUNC(0, 3, LVM_ABC(OP_NEWMAP, 0, 0, 0), LVM_ABC(OP_LDNIL, 1, 0, 0), LVM_ASBX(OP_LDI, 2, 1),
+         LVM_ABC(OP_SET, 0, 1, 2), LVM_ABC(OP_RET, 2, 0, 0));
+    CHECK(run(&r) == LVM_ERR_TYPE);
+
+    /* 200 inserts, delete every multiple of 3, probe sequences must survive */
+    begin(0, 1, 0);
+    FUNC(0, 9,
+         LVM_ABC(OP_NEWMAP, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 0), LVM_ASBX(OP_LDI, 2, 200), LVM_ASBX(OP_LDI, 3, 1),
+         LVM_ASBX(OP_LDI, 6, 3), LVM_ASBX(OP_LDI, 5, 0),
+         LVM_ABC(OP_SET, 0, 1, 1),                 /*  6 */
+         LVM_ABC(OP_ADD, 1, 1, 3),
+         LVM_ABC(OP_LT, 1, 1, 2),
+         LVM_ASBX(OP_JMP, 0, -4),
+         LVM_ASBX(OP_LDI, 1, 0),                   /* 10 */
+         LVM_ABC(OP_MOD, 4, 1, 6),                 /* 11 */
+         LVM_ABC(OP_EQ, 0, 4, 5),
+         LVM_ASBX(OP_JMP, 0, 2),
+         LVM_ABC(OP_LDNIL, 7, 0, 0),
+         LVM_ABC(OP_SET, 0, 1, 7),
+         LVM_ABC(OP_ADD, 1, 1, 3),                 /* 16 */
+         LVM_ABC(OP_LT, 1, 1, 2),
+         LVM_ASBX(OP_JMP, 0, -8),
+         LVM_ABC(OP_LEN, 4, 0, 0),                 /* 19 */
+         LVM_ASBX(OP_LDI, 1, 199),
+         LVM_ABC(OP_GET, 8, 0, 1),
+         LVM_ABC(OP_ADD, 4, 4, 8),
+         LVM_ABC(OP_RET, 4, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 133 + 199);
+}
+
 int main(void)
 {
     test_int_arith();
@@ -436,6 +573,9 @@ int main(void)
     test_verifier_rejects();
 
     test_strings();
+
+    test_arrays();
+    test_maps();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
