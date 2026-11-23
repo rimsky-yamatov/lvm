@@ -213,13 +213,15 @@ lvm_status lvm_obj_get(lvm_value c, lvm_value k, lvm_value *out)
         *out = lvm_int((unsigned char)s->data[i]);
         return LVM_OK;
     }
-    default: {
+    case LVM_OBJ_MAP: {
         const lvm_map *m = (const lvm_map *)lvm_to_obj(c);
         const lvm_entry *e = NULL;
         if (norm_key(&k)) e = map_find(m, k, key_hash(k));
         *out = e ? e->val : lvm_nil(); /* missing key (or nil/NaN key) is nil */
         return LVM_OK;
     }
+    default:
+        return LVM_ERR_TYPE;
     }
 }
 
@@ -253,7 +255,8 @@ lvm_status lvm_obj_len(lvm_value c, lvm_value *out)
     switch (lvm_to_obj(c)->type) {
     case LVM_OBJ_STRING: *out = lvm_int(((const lvm_string *)lvm_to_obj(c))->len); break;
     case LVM_OBJ_ARRAY:  *out = lvm_int(((const lvm_array *)lvm_to_obj(c))->len); break;
-    default:             *out = lvm_int(((const lvm_map *)lvm_to_obj(c))->count); break;
+    case LVM_OBJ_MAP:    *out = lvm_int(((const lvm_map *)lvm_to_obj(c))->count); break;
+    default:             return LVM_ERR_TYPE;
     }
     return LVM_OK;
 }

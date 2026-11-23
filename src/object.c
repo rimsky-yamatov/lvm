@@ -26,8 +26,12 @@ size_t lvm_obj_bytes(const lvm_obj *o)
         return LVM_STRING_SIZE(((const lvm_string *)o)->len);
     case LVM_OBJ_ARRAY:
         return sizeof(lvm_array) + (size_t)((const lvm_array *)o)->cap * sizeof(lvm_value);
-    default:
+    case LVM_OBJ_MAP:
         return sizeof(lvm_map) + (size_t)((const lvm_map *)o)->cap * sizeof(lvm_entry);
+    case LVM_OBJ_CLOSURE:
+        return LVM_CLOSURE_SIZE(((const lvm_closure *)o)->nup);
+    default:
+        return sizeof(lvm_upval);
     }
 }
 
@@ -68,13 +72,19 @@ void lvm_obj_free(lvm_vm *vm, lvm_obj *o)
         LVM_MEM(a, arr, sizeof *arr, 0);
         break;
     }
-    default: {
+    case LVM_OBJ_MAP: {
         lvm_map *map = (lvm_map *)o;
         if (map->tab)
             LVM_MEM(a, map->tab, (size_t)map->cap * sizeof(lvm_entry), 0);
         LVM_MEM(a, map, sizeof *map, 0);
         break;
     }
+    case LVM_OBJ_CLOSURE:
+        LVM_MEM(a, o, LVM_CLOSURE_SIZE(((lvm_closure *)o)->nup), 0);
+        break;
+    default:
+        LVM_MEM(a, o, sizeof(lvm_upval), 0);
+        break;
     }
 }
 
@@ -172,6 +182,7 @@ const char *lvm_type_name(lvm_value v)
         case LVM_OBJ_STRING: return "string";
         case LVM_OBJ_ARRAY:  return "array";
         case LVM_OBJ_MAP:    return "map";
+        case LVM_OBJ_CLOSURE: return "closure";
         }
     }
     return "unknown";

@@ -7,10 +7,15 @@
 
 #define LVM_MEM(a, p, old, nw) ((a)->alloc((a)->ud, (p), (old), (nw)))
 
+typedef struct lvm_closure lvm_closure;
+typedef struct lvm_upval lvm_upval;
+
 typedef struct {
     const lvm_func *fn;
     const uint32_t *pc;
     uint32_t base;
+    lvm_closure *cl;    /* closure running in this frame, or NULL */
+    uint32_t ret;       /* absolute stack slot that receives the result */
 } lvm_frame;
 
 typedef struct {
@@ -20,7 +25,7 @@ typedef struct {
 
 /* ---- heap objects ---- */
 
-enum { LVM_OBJ_STRING = 1, LVM_OBJ_ARRAY, LVM_OBJ_MAP };
+enum { LVM_OBJ_STRING = 1, LVM_OBJ_ARRAY, LVM_OBJ_MAP, LVM_OBJ_CLOSURE, LVM_OBJ_UPVAL };
 
 typedef struct lvm_obj {
     struct lvm_obj *next;   /* gc list */
@@ -52,7 +57,24 @@ typedef struct {
     lvm_entry *tab;         /* open addressing, linear probing */
 } lvm_map;
 
+/* An upvalue points at a stack slot while open and at its own storage once
+ * closed. Open upvalues form a list ordered by slot, highest first. */
+struct lvm_upval {
+    lvm_obj o;
+    lvm_value *v;
+    lvm_value closed;
+    lvm_upval *next;
+};
+
+struct lvm_closure {
+    lvm_obj o;
+    const lvm_func *fn;     /* lives in the module, which must outlive the closure */
+    uint32_t nup;
+    lvm_upval *up[];
+};
+
 #define LVM_EMPTY_KEY ((lvm_value)0)
+#define LVM_CLOSURE_SIZE(n) (offsetof(lvm_closure, up) + (size_t)(n) * sizeof(lvm_upval *))
 #define LVM_STRING_SIZE(len) (offsetof(lvm_string, data) + (size_t)(len) + 1)
 #define LVM_GC_MIN (256u * 1024u)
 
@@ -91,8 +113,11 @@ struct lvm_vm {
     lvm_obj **gray;
     size_t ngray, capgray;
 
+    lvm_upval *open;        /* open upvalues, highest slot first */
+
     /* current frame, published by the interpreter for root scanning */
     const lvm_func *cur_fn;
+    lvm_closure *cur_cl;
     uint32_t cur_base;
     uint32_t depth;
 };
@@ -109,6 +134,11 @@ void lvm_string_free_perm(const lvm_allocator *a, lvm_string *s);
 /* gc.c */
 lvm_status lvm_gc_collect(lvm_vm *vm);
 void lvm_gc_free(lvm_vm *vm);
+
+/* closure.c */
+lvm_closure *lvm_closure_new(lvm_vm *vm, const lvm_func *fn);   /* NULL on failure */
+lvm_upval *lvm_upval_capture(lvm_vm *vm, lvm_value *slot);      /* NULL on failure */
+void lvm_upvals_close(lvm_vm *vm, const lvm_value *level);
 
 /* container.c */
 lvm_value lvm_obj_array_new(lvm_vm *vm, uint32_t cap);   /* nil on failure */
