@@ -590,3 +590,282 @@ static void directive(as *s, const char *w, char **ops, int n)
         die(s, "unknown directive '%s'", w);
     }
 }
+
+/* ---- parsing ---- */
+
+static void define_label(as *s, const char *name)
+{
+    size_t i;
+
+    if (name[0] == '.') { /* local label */
+        func *f = cur(s);
+        label l;
+        for (i = 0; i < f->nlabels; i++) {
+            if (strcmp(f->labels[i].name, name) == 0) die(s, "duplicate label '%s'", name);
+        }
+        l.name = dup_str(s, name);
+        l.pc = (uint32_t)f->ncode;
+        VPUSH(s, f->labels, f->nlabels, f->caplabels, l);
+    } else { /* new function */
+        func f;
+        for (i = 0; i < s->nfuncs; i++) {
+            if (strcmp(s->funcs[i].name, name) == 0) die(s, "duplicate function '%s'", name);
+        }
+        memset(&f, 0, sizeof f);
+        f.name = dup_str(s, name);
+        f.line = s->line;
+        VPUSH(s, s->funcs, s->nfuncs, s->capfuncs, f);
+    }
+}
+
+static void parse(as *s, const char *src, size_t len)
+{
+    size_t pos = 0, i, run = 0, maxlen = 0;
+    char *line;
+
+    for (i = 0; i < len; i++) {
+        run = src[i] == '\n' ? 0 : run + 1;
+        if (run > maxlen) maxlen = run;
+    }
+    line = zalloc(s, maxlen + 1);
+
+    while (pos < len) {
+        size_t e = pos, n;
+        char *p, *q, *w, *ops[MAX_OPS];
+        int nops;
+
+        while (e < len && src[e] != '\n') e++;
+        n = e - pos;
+        memcpy(line, src + pos, n);
+        line[n] = '\0';
+        pos = e < len ? e + 1 : e;
+        s->line++;
+
+        strip_comment(s, line);
+        p = line;
+        while (is_space((unsigned char)*p)) p++;
+        if (!*p) continue;
+
+        q = p;
+        while (is_ident((unsigned char)*q)) q++;
+        if (q > p && *q == ':') { /* a label, optionally followed by a statement */
+            *q = '\0';
+            define_label(s, p);
+            p = q + 1;
+            while (is_space((unsigned char)*p)) p++;
+            if (!*p) continue;
+        }
+
+        w = p;
+        while (*p && !is_space((unsigned char)*p)) p++;
+        if (*p) *p++ = '\0';
+        nops = split_ops(s, p, ops);
+        if (w[0] == '.') directive(s, w, ops, nops);
+        else instruction(s, w, ops, nops);
+    }
+    s->line = 0;
+}
+
+/* ---- resolving names ---- */
+
+static void patch16(uint32_t *w, uint32_t v)
+{
+    *w = (*w & 0xFFFFu) | ((v & 0xFFFFu) << 16);
+}
+
+static void resolve(as *s)
+{
+    size_t fi, k, m;
+
+    if (!s->nfuncs) die(s, "no functions");
+
+    for (fi = 0; fi < s->nfuncs; fi++) {
+        func *f = &s->funcs[fi];
+        unsigned n;
+
+        if (!f->ncode) {
+            s->line = f->line;
+            die(s, "function '%s' has no instructions", f->name);
+        }
+
+        for (k = 0; k < f->njumps; k++) {
+            const fixup *j = &f->jumps[k];
+            long target = -1, off;
+
+            for (m = 0; m < f->nlabels; m++) {
+                if (strcmp(f->labels[m].name, j->name) == 0) {
+                    target = (long)f->labels[m].pc;
+                    break;
+                }
+            }
+            s->line = j->line;
+            if (target < 0) die(s, "undefined label '%s'", j->name);
+            if (target >= (long)f->ncode) die(s, "label '%s' is past the last instruction", j->name);
+            off = target - ((long)j->pc + 1);
+            if (off < -32768 || off > 32767) die(s, "jump to '%s' is too far", j->name);
+            patch16(&f->code[j->pc], (uint32_t)off);
+        }
+
+        for (k = 0; k < f->nrefs; k++) {
+            const fixup *r = &f->refs[k];
+            const func *callee = NULL;
+            uint32_t word = f->code[r->pc];
+            size_t idx = 0;
+
+            for (m = 0; m < s->nfuncs; m++) {
+                if (strcmp(s->funcs[m].name, r->name) == 0) {
+                    callee = &s->funcs[m];
+                    idx = m;
+                    break;
+                }
+            }
+            s->line = r->line;
+            if (!callee) die(s, "undefined function '%s'", r->name);
+            if (idx > 65535) die(s, "too many functions");
+            patch16(&f->code[r->pc], (uint32_t)idx);
+
+            if (LVM_OP(word) == OP_CALL) {
+                if (callee->nup)
+                    die(s, "'%s' has upvalues: create it with CLOSURE and call it with CALLC", r->name);
+                /* arguments live in R[A..A+nparams-1] */
+                if (callee->nparams && LVM_A(word) + callee->nparams > f->used)
+                    f->used = LVM_A(word) + callee->nparams;
+            } else { /* CLOSURE: the captured registers must exist */
+                for (m = 0; m < callee->nup; m++) {
+                    if (callee->ups[m].instack && (unsigned)callee->ups[m].index + 1 > f->used)
+                        f->used = (unsigned)callee->ups[m].index + 1;
+                }
+            }
+        }
+
+        n = f->regs;
+        if (f->used > n) n = f->used;
+        if (f->nparams > n) n = f->nparams;
+        if (!n) n = 1;
+        if (n > 255) {
+            s->line = f->line;
+            die(s, "function '%s' needs %u registers (max 255)", f->name, n);
+        }
+        f->regs = n;
+    }
+}
+
+/* ---- output ---- */
+
+static void put8(as *s, unsigned v)
+{
+    VPUSH(s, s->out, s->nout, s->capout, (uint8_t)v);
+}
+
+static void put16(as *s, unsigned v) { put8(s, v & 0xFF); put8(s, (v >> 8) & 0xFF); }
+static void put32(as *s, uint32_t v) { put16(s, v & 0xFFFFu); put16(s, v >> 16); }
+static void put64(as *s, uint64_t v) { put32(s, (uint32_t)v); put32(s, (uint32_t)(v >> 32)); }
+
+static void build(as *s)
+{
+    size_t i, j;
+    uint32_t entry = 0;
+
+    for (i = 0; i < s->nfuncs; i++) {
+        if (strcmp(s->funcs[i].name, "main") == 0) entry = (uint32_t)i; /* else the first */
+    }
+
+    put8(s, 'L'); put8(s, 'V'); put8(s, 'M'); put8(s, 'B');
+    put16(s, LVM_VERSION);
+    put16(s, 0);
+    put32(s, (uint32_t)s->nconsts);
+    put32(s, (uint32_t)s->nfuncs);
+    put32(s, entry);
+
+    for (i = 0; i < s->nconsts; i++) {
+        const konst *k = &s->consts[i];
+        put8(s, (unsigned)k->kind);
+        switch (k->kind) {
+        case 1: put8(s, (unsigned)k->i); break;
+        case 2: put64(s, (uint64_t)k->i); break;
+        case 3: {
+            uint64_t bits;
+            memcpy(&bits, &k->d, sizeof bits);
+            put64(s, bits);
+            break;
+        }
+        case 4:
+            put32(s, (uint32_t)k->n);
+            for (j = 0; j < k->n; j++) put8(s, (unsigned char)k->s[j]);
+            break;
+        default: break;
+        }
+    }
+
+    for (i = 0; i < s->nfuncs; i++) {
+        const func *f = &s->funcs[i];
+        put8(s, f->nparams);
+        put8(s, f->regs);
+        put8(s, f->nup);
+        for (j = 0; j < f->nup; j++) {
+            put8(s, f->ups[j].instack);
+            put8(s, f->ups[j].index);
+        }
+        put32(s, (uint32_t)f->ncode);
+        for (j = 0; j < f->ncode; j++) put32(s, f->code[j]);
+    }
+}
+
+void lvm_assemble_free(const lvm_allocator *a, uint8_t *buf, size_t len)
+{
+    if (!a) a = lvm_default_allocator();
+    if (buf) LVM_MEM(a, buf, len, 0);
+}
+
+lvm_status lvm_assemble(const lvm_allocator *a, const char *src, size_t len,
+                        uint8_t **out, size_t *out_len, char *err, size_t err_size)
+{
+    as *s;
+    lvm_status st;
+    lvm_module m;
+
+    if (!a) a = lvm_default_allocator();
+    *out = NULL;
+    *out_len = 0;
+    if (err_size) err[0] = '\0';
+
+    s = LVM_MEM(a, NULL, 0, sizeof *s);
+    if (!s) return LVM_ERR_MEM;
+    memset(s, 0, sizeof *s);
+    s->a = *a;
+    s->err = err;
+    s->errsz = err_size;
+
+    if (setjmp(s->jb) == 0) {
+        uint8_t *buf;
+        parse(s, src, len);
+        resolve(s);
+        build(s);
+        buf = LVM_MEM(a, NULL, 0, s->nout);
+        if (!buf) {
+            s->status = LVM_ERR_MEM;
+        } else {
+            memcpy(buf, s->out, s->nout);
+            *out = buf;
+            *out_len = s->nout;
+        }
+    }
+    st = s->status;
+    release(s);
+    LVM_MEM(a, s, sizeof *s, 0);
+    if (st != LVM_OK) return st;
+
+    /* the verifier has the last word */
+    st = lvm_load(a, *out, *out_len, &m);
+    if (st == LVM_OK) {
+        lvm_module_free(&m);
+        return LVM_OK;
+    }
+    if (err_size)
+        snprintf(err, err_size, "rejected by the verifier (%s): check register numbers, "
+                 "jumps and that every function ends with RET or JMP", lvm_strerror(st));
+    lvm_assemble_free(a, *out, *out_len);
+    *out = NULL;
+    *out_len = 0;
+    return st;
+}
