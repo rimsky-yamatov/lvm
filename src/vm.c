@@ -7,31 +7,11 @@
 
 #define LVM_MAX_STACK (1u << 28)
 
-typedef struct {
-    const lvm_func *fn;
-    const uint32_t *pc;
-    uint32_t base;
-} frame;
-
-typedef struct {
-    lvm_host_fn fn;
-    void *ud;
-} host_slot;
-
-struct lvm_vm {
-    lvm_allocator alloc;
-    lvm_value *stack;
-    uint32_t stack_slots;
-    frame *frames;
-    uint32_t max_frames;
-    host_slot host[LVM_HOST_MAX];
-};
-
 lvm_vm *lvm_new(const lvm_allocator *a, uint32_t stack_slots, uint32_t max_frames)
 {
     lvm_vm *vm;
     lvm_value *stack;
-    frame *frames;
+    lvm_frame *frames;
 
     if (!a) a = lvm_default_allocator();
     if (stack_slots == 0 || stack_slots > LVM_MAX_STACK ||
@@ -331,7 +311,7 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         NEXT();
     }
     CASE(OP_HOST) {
-        const host_slot *h = &vm->host[LVM_C(i)];
+        const lvm_host_slot *h = &vm->host[LVM_C(i)];
         if (!h->fn) { st = LVM_ERR_HOST; goto fail; }
         st = h->fn(h->ud, &R[LVM_A(i)], (int)LVM_B(i));
         if (st != LVM_OK) goto fail;
