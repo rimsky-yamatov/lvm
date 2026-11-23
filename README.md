@@ -3,8 +3,9 @@
 Small register-based bytecode VM.
 
 - pure C99, no JIT, no OS dependencies (the host provides I/O)
-- 32-bit fixed-width instructions, 26 opcodes
-- 64-bit NaN-boxed values (nil, bool, int48, float64)
+- 32-bit fixed-width instructions, 31 opcodes
+- 64-bit NaN-boxed values (nil, bool, int48, float64, string, array, map)
+- precise mark-and-sweep GC
 - bytecode verifier: bad registers, jumps, constants and calls are
   rejected at load time, so untrusted bytecode can be run
 - threaded dispatch via computed goto, plain `switch` fallback
@@ -16,6 +17,14 @@ Small register-based bytecode VM.
 make          # liblvm.a and the lvmi runner
 make test
 make portable # strict C99 + switch dispatch
+```
+
+or with CMake (also used by CI):
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+ctest --test-dir build -C Release
 ```
 
 `-lm` is needed for `fmod`.
@@ -48,7 +57,23 @@ lvm_module_free(&m);
 ## Status
 
 Implemented: loader, verifier, arithmetic, bit ops, comparison, jumps,
-calls, host calls.
+calls, host calls, strings, arrays, maps, garbage collection.
 
-Not yet: closures, arrays/maps, GC, exceptions, coroutines, tail calls,
-debug info, assembler.
+Not yet: closures, exceptions, coroutines, tail calls, debug info,
+assembler.
+
+## CI and releases
+
+- `ci.yml` builds and tests on Linux, macOS and Windows for every push to
+  `main` and every pull request. It also runs a strict-C99 build with switch
+  dispatch, and the tests under ASan and UBSan.
+- `release.yml` runs when a `v*` tag is pushed. It builds and tests on the
+  three platforms, packages `lvmi`, the static library, headers and docs,
+  and publishes a GitHub release with the archives, `SHA256SUMS` and notes
+  listing the commits since the previous tag. Tags containing `-` (for
+  example `v0.2.0-rc1`) are marked as pre-releases.
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```

@@ -28,6 +28,11 @@ instruction after the jump.
 | CALL   | A Bx  | call func Bx with args in R[A..]; result lands in R[A] |
 | RET    | A     | return R[A] |
 | HOST   | A B C | host function C gets R[A..A+B-1]; result goes to R[A] |
+| NEWARR | A B   | R[A] = new array, capacity hint B |
+| NEWMAP | A B   | R[A] = new map, size hint B |
+| GET    | A B C | R[A] = R[B][R[C]] |
+| SET    | A B C | R[A][R[B]] = R[C] |
+| LEN    | A B   | R[A] = length of string, array or map R[B] |
 
 ## Semantics
 
@@ -41,6 +46,25 @@ instruction after the jump.
 - Truthiness: only `nil` and `false` are falsy.
 - Calls: the callee's frame starts at the caller's R[A], so arguments
   are passed without copying. Registers past the parameters start as nil.
+
+## Heap values
+
+Strings, arrays and maps live on a garbage-collected heap (precise,
+non-incremental mark and sweep). Pointers are stored in the 48-bit payload
+of a NaN-boxed value, so the allocator must return addresses below 2^48.
+
+- Strings are immutable byte strings and compare by content. `GET` on a
+  string yields the byte at that index as an int. String constants come
+  from the constant pool; hosts create more with `lvm_new_string`.
+- Arrays: `GET` needs an int index in `[0, len)`. `SET` accepts
+  `[0, len]`; `len` itself appends. Anything else is `LVM_ERR_BOUNDS`.
+- Maps: keys are ints, floats, bools, strings or heap values. Strings
+  compare by content, other heap values by identity. A float with an
+  integral value is the same key as the int (`1` and `1.0`). `nil` and NaN
+  are not valid keys. `GET` of a missing key gives nil; `SET` with a nil
+  value removes the key.
+- A collection runs before an allocation when the heap has outgrown its
+  threshold. Roots are all registers of all live frames.
 
 ## Verifier rules
 

@@ -12,6 +12,7 @@ entry      u32      index of the entry function
 
 consts[nconsts]
   tag u8: 0 nil | 1 bool (u8 0/1) | 2 int (i64, must fit 48 bits) | 3 float (f64 bits)
+          | 4 string (u32 length <= 16 MiB, then that many bytes)
 
 funcs[nfuncs]
   nparams u8
