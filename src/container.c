@@ -188,3 +188,72 @@ static lvm_status map_set(lvm_vm *vm, lvm_map *m, lvm_value k, lvm_value v)
     m->count++;
     return LVM_OK;
 }
+
+/* ---- generic access ---- */
+
+lvm_status lvm_obj_get(lvm_value c, lvm_value k, lvm_value *out)
+{
+    int64_t i;
+
+    if (!lvm_is_ptr(c)) return LVM_ERR_TYPE;
+    switch (lvm_to_obj(c)->type) {
+    case LVM_OBJ_ARRAY: {
+        const lvm_array *a = (const lvm_array *)lvm_to_obj(c);
+        if (!lvm_is_int(k)) return LVM_ERR_TYPE;
+        i = lvm_as_int(k);
+        if (i < 0 || i >= (int64_t)a->len) return LVM_ERR_BOUNDS;
+        *out = a->items[i];
+        return LVM_OK;
+    }
+    case LVM_OBJ_STRING: {
+        const lvm_string *s = (const lvm_string *)lvm_to_obj(c);
+        if (!lvm_is_int(k)) return LVM_ERR_TYPE;
+        i = lvm_as_int(k);
+        if (i < 0 || i >= (int64_t)s->len) return LVM_ERR_BOUNDS;
+        *out = lvm_int((unsigned char)s->data[i]);
+        return LVM_OK;
+    }
+    default: {
+        const lvm_map *m = (const lvm_map *)lvm_to_obj(c);
+        const lvm_entry *e = NULL;
+        if (norm_key(&k)) e = map_find(m, k, key_hash(k));
+        *out = e ? e->val : lvm_nil(); /* missing key (or nil/NaN key) is nil */
+        return LVM_OK;
+    }
+    }
+}
+
+lvm_status lvm_obj_set(lvm_vm *vm, lvm_value c, lvm_value k, lvm_value v)
+{
+    if (!lvm_is_ptr(c)) return LVM_ERR_TYPE;
+    switch (lvm_to_obj(c)->type) {
+    case LVM_OBJ_ARRAY: {
+        lvm_array *a = (lvm_array *)lvm_to_obj(c);
+        int64_t i;
+        if (!lvm_is_int(k)) return LVM_ERR_TYPE;
+        i = lvm_as_int(k);
+        if (i < 0 || i > (int64_t)a->len) return LVM_ERR_BOUNDS;
+        if (i == (int64_t)a->len) { /* one past the end appends */
+            if (!array_reserve(vm, a, a->len + 1)) return LVM_ERR_MEM;
+            a->len++;
+        }
+        a->items[i] = v;
+        return LVM_OK;
+    }
+    case LVM_OBJ_MAP:
+        return map_set(vm, (lvm_map *)lvm_to_obj(c), k, v);
+    default: /* strings are immutable */
+        return LVM_ERR_TYPE;
+    }
+}
+
+lvm_status lvm_obj_len(lvm_value c, lvm_value *out)
+{
+    if (!lvm_is_ptr(c)) return LVM_ERR_TYPE;
+    switch (lvm_to_obj(c)->type) {
+    case LVM_OBJ_STRING: *out = lvm_int(((const lvm_string *)lvm_to_obj(c))->len); break;
+    case LVM_OBJ_ARRAY:  *out = lvm_int(((const lvm_array *)lvm_to_obj(c))->len); break;
+    default:             *out = lvm_int(((const lvm_map *)lvm_to_obj(c))->count); break;
+    }
+    return LVM_OK;
+}
