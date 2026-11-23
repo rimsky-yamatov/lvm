@@ -555,6 +555,87 @@ static void test_maps(void)
     CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 133 + 199);
 }
 
+/* ---- garbage collection ---- */
+
+static void test_gc(void)
+{
+    lvm_value r;
+
+    /* nested live objects survive while 5000 rounds of garbage are collected */
+    begin(0, 1, 0);
+    FUNC(0, 10,
+         LVM_ABC(OP_NEWARR, 0, 0, 0),
+         LVM_ABC(OP_NEWARR, 1, 0, 0),
+         LVM_ASBX(OP_LDI, 2, 0),
+         LVM_ABC(OP_SET, 0, 2, 1),
+         LVM_ASBX(OP_LDI, 3, 42),
+         LVM_ABC(OP_SET, 1, 2, 3),
+         LVM_ASBX(OP_LDI, 4, 0),
+         LVM_ASBX(OP_LDI, 5, 5000),
+         LVM_ASBX(OP_LDI, 6, 1),
+         LVM_ABC(OP_NEWMAP, 7, 0, 0),              /* 9 */
+         LVM_ABC(OP_NEWARR, 8, 0, 0),
+         LVM_ABC(OP_SET, 8, 2, 4),
+         LVM_ABC(OP_SET, 7, 4, 8),
+         LVM_ABC(OP_ADD, 4, 4, 6),
+         LVM_ABC(OP_LT, 1, 4, 5),
+         LVM_ASBX(OP_JMP, 0, -7),
+         LVM_ABC(OP_GET, 9, 0, 2),
+         LVM_ABC(OP_GET, 9, 9, 2),
+         LVM_ABC(OP_RET, 9, 0, 0));
+    g_gc_min = 1024;
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 42);
+    CHECK(g_heap < 8192); /* garbage was reclaimed, not accumulated */
+    g_gc_min = 0;
+
+    /* a caller's registers stay rooted while a callee triggers collections */
+    begin(0, 2, 0);
+    FUNC(0, 4,
+         LVM_ABC(OP_NEWARR, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 7),
+         LVM_ASBX(OP_LDI, 2, 0),
+         LVM_ABC(OP_SET, 0, 2, 1),
+         LVM_ABX(OP_CALL, 1, 1),
+         LVM_ASBX(OP_LDI, 2, 0),
+         LVM_ABC(OP_GET, 3, 0, 2),
+         LVM_ABC(OP_ADD, 3, 3, 1),
+         LVM_ABC(OP_RET, 3, 0, 0));
+    FUNC(0, 4,
+         LVM_ASBX(OP_LDI, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 2000),
+         LVM_ASBX(OP_LDI, 2, 1),
+         LVM_ABC(OP_NEWMAP, 3, 4, 0),              /* 3 */
+         LVM_ABC(OP_ADD, 0, 0, 2),
+         LVM_ABC(OP_LT, 1, 0, 1),
+         LVM_ASBX(OP_JMP, 0, -4),
+         LVM_ABC(OP_RET, 2, 0, 0));
+    g_gc_min = 512;
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 8);
+    g_gc_min = 0;
+}
+
+static void test_data_format(void)
+{
+    begin(1, 1, 0);
+    u8(4);
+    u32(100); /* longer than the rest of the file */
+    FUNC(0, 1, LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_FORMAT);
+
+    begin(1, 1, 0);
+    u8(9); /* unknown constant tag */
+    FUNC(0, 1, LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_FORMAT);
+
+    begin(0, 1, 0);
+    FUNC(0, 2, LVM_ABC(OP_GET, 5, 0, 1), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY);
+
+    begin(0, 1, 0);
+    FUNC(0, 2, LVM_ABC(OP_NEWARR, 9, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY);
+}
+
 int main(void)
 {
     test_int_arith();
@@ -576,6 +657,9 @@ int main(void)
 
     test_arrays();
     test_maps();
+
+    test_gc();
+    test_data_format();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
