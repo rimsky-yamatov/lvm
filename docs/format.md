@@ -17,6 +17,8 @@ consts[nconsts]
 funcs[nfuncs]
   nparams u8
   nregs   u8       >= 1, >= nparams
+  nupvals u8
+  upvals  nupvals x { instack u8 (0 or 1), index u8 }
   ncode   u32      >= 1
   code    u32[ncode]
 ```

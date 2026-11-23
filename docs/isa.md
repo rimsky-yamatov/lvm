@@ -33,6 +33,11 @@ instruction after the jump.
 | GET    | A B C | R[A] = R[B][R[C]] |
 | SET    | A B C | R[A][R[B]] = R[C] |
 | LEN    | A B   | R[A] = length of string, array or map R[B] |
+| CLOSURE | A Bx | R[A] = closure of func Bx, capturing its upvalues |
+| GETUP  | A B   | R[A] = upvalue B of the running closure |
+| SETUP  | A B   | upvalue B of the running closure = R[A] |
+| CLOSE  | A     | close the upvalues of registers R[A..] |
+| CALLC  | A B   | call closure R[A] with args R[A+1..A+B]; result replaces R[A] |
 
 ## Semantics
 
@@ -66,6 +71,26 @@ of a NaN-boxed value, so the allocator must return addresses below 2^48.
 - A collection runs before an allocation when the heap has outgrown its
   threshold. Roots are all registers of all live frames.
 
+## Closures
+
+A function lists the upvalues it needs: each entry says whether to capture
+a register of the frame that creates the closure (`instack = 1`, `index` is
+the register) or to copy an upvalue of the creating closure (`instack = 0`).
+`CLOSURE` builds the closure and fills its upvalues from that list.
+
+An upvalue is open while its variable is still in a register: closures that
+capture the same register share one upvalue, so writes through any of them
+are visible to all. When the frame returns, its open upvalues are closed:
+the value moves into the upvalue and lives on with the closure. `CLOSE A`
+does the same early for registers `A` and up, which gives a loop body a
+fresh variable each iteration.
+
+`CALLC` needs the argument count to equal the function's `nparams`
+(`LVM_ERR_ARGS` otherwise). The callee's registers start at `R[A+1]`.
+Functions with upvalues are only called through `CALLC`; `CALL` is for
+plain functions. A closure refers to its function in the module, so the
+module must stay loaded while closures exist.
+
 ## Verifier rules
 
 - every register operand is inside the frame
@@ -73,4 +98,9 @@ of a NaN-boxed value, so the allocator must return addresses below 2^48.
 - jump targets are inside the function
 - EQ/LT/LE are followed by a JMP
 - a function ends with RET or JMP (no fall-through)
+- upvalue indices are below the function's `nupvals`, and each capture of
+  a `CLOSURE` target names a register of the frame or an upvalue of the
+  creating function
+- `CALL` targets have no upvalues; the entry function has none
+- `CALLC` argument registers lie inside the frame
 - unknown opcodes are rejected
