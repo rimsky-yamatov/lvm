@@ -183,7 +183,12 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         [OP_NEWMAP] = &&L_OP_NEWMAP,
         [OP_GET] = &&L_OP_GET,
         [OP_SET] = &&L_OP_SET,
-        [OP_LEN] = &&L_OP_LEN
+        [OP_LEN] = &&L_OP_LEN,
+        [OP_CLOSURE] = &&L_OP_CLOSURE,
+        [OP_GETUP] = &&L_OP_GETUP,
+        [OP_SETUP] = &&L_OP_SETUP,
+        [OP_CLOSE] = &&L_OP_CLOSE,
+        [OP_CALLC] = &&L_OP_CALLC
     };
 #endif
 
@@ -368,6 +373,68 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         st = lvm_obj_len(R[LVM_B(i)], &v);
         if (st != LVM_OK) goto fail;
         R[LVM_A(i)] = v;
+        NEXT();
+    }
+    CASE(OP_CLOSURE) {
+        const lvm_func *proto = &m->funcs[LVM_BX(i)];
+        lvm_closure *c;
+        uint32_t u;
+
+        SYNC();
+        c = lvm_closure_new(vm, proto);
+        if (!c) { st = LVM_ERR_MEM; goto fail; }
+        /* root the closure before capturing: capturing may allocate */
+        R[LVM_A(i)] = lvm_from_obj(&c->o);
+        for (u = 0; u < c->nup; u++) {
+            const lvm_updesc *d = &proto->upvals[u];
+            lvm_upval *uv = d->instack ? lvm_upval_capture(vm, &R[d->index]) : cl->up[d->index];
+            if (!uv) {
+                R[LVM_A(i)] = lvm_nil();
+                st = LVM_ERR_MEM;
+                goto fail;
+            }
+            c->up[u] = uv;
+        }
+        NEXT();
+    }
+    CASE(OP_GETUP)
+        R[LVM_A(i)] = *cl->up[LVM_B(i)]->v;
+        NEXT();
+    CASE(OP_SETUP)
+        *cl->up[LVM_B(i)]->v = R[LVM_A(i)];
+        NEXT();
+    CASE(OP_CLOSE)
+        lvm_upvals_close(vm, &R[LVM_A(i)]);
+        NEXT();
+    CASE(OP_CALLC) {
+        /* closure in R[A], arguments R[A+1..A+B]; the result replaces the closure */
+        lvm_value f = R[LVM_A(i)];
+        lvm_closure *c;
+        const lvm_func *callee;
+        uint32_t nbase = base + LVM_A(i) + 1;
+
+        if (!lvm_is_obj(f, LVM_OBJ_CLOSURE)) { st = LVM_ERR_TYPE; goto fail; }
+        c = (lvm_closure *)lvm_to_obj(f);
+        callee = c->fn;
+        if (callee->nparams != LVM_B(i)) { st = LVM_ERR_ARGS; goto fail; }
+        if (depth >= vm->max_frames || nbase > vm->stack_slots ||
+            callee->nregs > vm->stack_slots - nbase) {
+            st = LVM_ERR_STACK;
+            goto fail;
+        }
+        vm->frames[depth].fn = fn;
+        vm->frames[depth].pc = pc;
+        vm->frames[depth].base = base;
+        vm->frames[depth].cl = cl;
+        vm->frames[depth].ret = base + LVM_A(i);
+        depth++;
+
+        fn = callee;
+        cl = c;
+        pc = callee->code;
+        base = nbase;
+        R = vm->stack + base;
+        for (k = callee->nparams; k < callee->nregs; k++) R[k] = lvm_nil();
         NEXT();
     }
     LVM_DISPATCH_END
