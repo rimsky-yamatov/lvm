@@ -342,3 +342,251 @@ static uint32_t intern(as *s, const konst *k)
     VPUSH(s, s->consts, s->nconsts, s->capconsts, *k);
     return (uint32_t)(s->nconsts - 1);
 }
+
+/* ---- functions, operands, emission ---- */
+
+static func *cur(as *s)
+{
+    if (!s->nfuncs)
+        die(s, "instruction or directive outside a function (start one with 'name:')");
+    return &s->funcs[s->nfuncs - 1];
+}
+
+static void note_reg(as *s, unsigned r)
+{
+    func *f = cur(s);
+
+    if (r > MAX_REG) die(s, "register R%u is out of range (R0..R%d)", r, MAX_REG);
+    if (r + 1 > f->used) f->used = r + 1;
+}
+
+/* "R12" -> 12 without side effects; 0 if the text is not a register */
+static int reg_number(const char *t, unsigned *out)
+{
+    unsigned v = 0;
+    const char *p = t;
+
+    if (*p != 'R' && *p != 'r') return 0;
+    p++;
+    if (!is_digit((unsigned char)*p)) return 0;
+    while (is_digit((unsigned char)*p)) {
+        v = v * 10 + (unsigned)(*p - '0');
+        if (v > 999) return 0;
+        p++;
+    }
+    if (*p) return 0;
+    *out = v;
+    return 1;
+}
+
+static unsigned reg(as *s, const char *t)
+{
+    unsigned v;
+
+    if (!reg_number(t, &v)) die(s, "expected a register (R0..R%d), got '%s'", MAX_REG, t);
+    note_reg(s, v);
+    return v;
+}
+
+static unsigned imm8(as *s, const char *t)
+{
+    int64_t v;
+
+    if (!parse_int(s, t, &v) || v < 0 || v > 255) die(s, "expected a number 0..255, got '%s'", t);
+    return (unsigned)v;
+}
+
+static int32_t imm16(as *s, const char *t)
+{
+    int64_t v;
+
+    if (!parse_int(s, t, &v)) die(s, "expected an integer, got '%s'", t);
+    if (v < -32768 || v > 32767) die(s, "%s does not fit LDI (16 bits); use LDK", t);
+    return (int32_t)v;
+}
+
+static unsigned boolean(as *s, const char *t)
+{
+    if (ieq(t, "true") || strcmp(t, "1") == 0) return 1;
+    if (ieq(t, "false") || strcmp(t, "0") == 0) return 0;
+    die(s, "expected true/false (or 1/0), got '%s'", t);
+}
+
+static void emit(as *s, uint32_t w)
+{
+    func *f = cur(s);
+
+    if (f->ncode >= MAX_CODE) die(s, "function '%s' is too large", f->name);
+    VPUSH(s, f->code, f->ncode, f->capcode, w);
+}
+
+/* remember that the word just emitted needs a local label or function */
+static void add_fixup(as *s, int is_jump, const char *name)
+{
+    func *f = cur(s);
+    fixup x;
+
+    x.pc = (uint32_t)(f->ncode - 1);
+    x.name = dup_str(s, name);
+    x.line = s->line;
+    if (is_jump) VPUSH(s, f->jumps, f->njumps, f->capjumps, x);
+    else VPUSH(s, f->refs, f->nrefs, f->caprefs, x);
+}
+
+typedef struct {
+    const char *name;
+    int op;
+    const char *sig;    /* r register, i 0..255, b bool, S int16, K constant, F function, L label */
+} insn_def;
+
+/* Register-like operands fill A, B, C in order. S, K, F and L fill the
+ * 16-bit field and must come last. */
+static const insn_def insns[] = {
+    { "MOV", OP_MOV, "rr" },       { "LDK", OP_LDK, "rK" },
+    { "LDI", OP_LDI, "rS" },       { "LDBOOL", OP_LDBOOL, "rb" },
+    { "ADD", OP_ADD, "rrr" },      { "SUB", OP_SUB, "rrr" },
+    { "MUL", OP_MUL, "rrr" },      { "DIV", OP_DIV, "rrr" },
+    { "MOD", OP_MOD, "rrr" },      { "NEG", OP_NEG, "rr" },
+    { "AND", OP_AND, "rrr" },      { "OR", OP_OR, "rrr" },
+    { "XOR", OP_XOR, "rrr" },      { "NOT", OP_NOT, "rr" },
+    { "SHL", OP_SHL, "rrr" },      { "SHR", OP_SHR, "rrr" },
+    { "EQ", OP_EQ, "brr" },        { "LT", OP_LT, "brr" },
+    { "LE", OP_LE, "brr" },
+    { "JMP", OP_JMP, "L" },        { "JT", OP_JT, "rL" },
+    { "JF", OP_JF, "rL" },
+    { "CALL", OP_CALL, "rF" },     { "RET", OP_RET, "r" },
+    { "HOST", OP_HOST, "rii" },
+    { "GET", OP_GET, "rrr" },      { "SET", OP_SET, "rrr" },
+    { "LEN", OP_LEN, "rr" },
+    { "CLOSURE", OP_CLOSURE, "rF" },
+    { "GETUP", OP_GETUP, "ri" },   { "SETUP", OP_SETUP, "ri" },
+    { "CLOSE", OP_CLOSE, "r" },    { "CALLC", OP_CALLC, "ri" }
+};
+
+/* compare-and-jump: a comparison followed by the JMP it guards */
+static const struct { const char *name; int op; int flag; int swap; } jcc[] = {
+    { "JEQ", OP_EQ, 1, 0 }, { "JNE", OP_EQ, 0, 0 },
+    { "JLT", OP_LT, 1, 0 }, { "JLE", OP_LE, 1, 0 },
+    { "JGT", OP_LT, 1, 1 }, { "JGE", OP_LE, 1, 1 }
+};
+
+static void emit_sig(as *s, const insn_def *d, char **ops, int n)
+{
+    int want = (int)strlen(d->sig), k, nv = 0;
+    unsigned v[3] = { 0, 0, 0 };
+    char kind = 0;
+    const char *name = NULL;
+    int32_t sbx = 0;
+    uint32_t bx = 0;
+
+    if (n != want) die(s, "%s takes %d operand(s), got %d", d->name, want, n);
+    for (k = 0; k < want; k++) {
+        switch (d->sig[k]) {
+        case 'r': v[nv++] = reg(s, ops[k]); break;
+        case 'b': v[nv++] = boolean(s, ops[k]); break;
+        case 'i': v[nv++] = imm8(s, ops[k]); break;
+        case 'S': kind = 'S'; sbx = imm16(s, ops[k]); break;
+        case 'K': {
+            konst c = parse_literal(s, ops[k]);
+            kind = 'K';
+            bx = intern(s, &c);
+            break;
+        }
+        default: kind = d->sig[k]; name = ops[k]; break; /* F, L */
+        }
+    }
+
+    /* the frame must be big enough for the registers an instruction names */
+    if (d->op == OP_HOST) note_reg(s, v[0] + (v[1] ? v[1] - 1 : 0));
+    if (d->op == OP_CALLC) note_reg(s, v[0] + v[1]);
+
+    switch (kind) {
+    case 0:   emit(s, LVM_ABC(d->op, v[0], v[1], v[2])); break;
+    case 'S': emit(s, LVM_ASBX(d->op, v[0], sbx)); break;
+    case 'K': emit(s, LVM_ABX(d->op, v[0], bx)); break;
+    default:
+        emit(s, LVM_ABX(d->op, v[0], 0));
+        add_fixup(s, kind == 'L', name);
+        break;
+    }
+}
+
+static void instruction(as *s, const char *w, char **ops, int n)
+{
+    size_t i;
+
+    cur(s); /* must be inside a function */
+
+    if (ieq(w, "LDNIL")) { /* LDNIL Ra  or  LDNIL Ra, Rb  (the range a..b) */
+        unsigned a, b = 0;
+        if (n < 1 || n > 2) die(s, "LDNIL takes 1 or 2 registers");
+        a = reg(s, ops[0]);
+        if (n == 2) {
+            unsigned last = reg(s, ops[1]);
+            if (last < a) die(s, "LDNIL range is backwards");
+            b = last - a;
+        }
+        emit(s, LVM_ABC(OP_LDNIL, a, b, 0));
+        return;
+    }
+    if (ieq(w, "NEWARR") || ieq(w, "NEWMAP")) { /* optional size hint */
+        unsigned a, hint = 0;
+        if (n < 1 || n > 2) die(s, "%s takes a register and an optional size hint", w);
+        a = reg(s, ops[0]);
+        if (n == 2) hint = imm8(s, ops[1]);
+        emit(s, LVM_ABC(ieq(w, "NEWARR") ? OP_NEWARR : OP_NEWMAP, a, hint, 0));
+        return;
+    }
+    for (i = 0; i < sizeof jcc / sizeof jcc[0]; i++) {
+        if (ieq(w, jcc[i].name)) {
+            unsigned b, c;
+            if (n != 3) die(s, "%s takes 2 registers and a label", jcc[i].name);
+            b = reg(s, ops[0]);
+            c = reg(s, ops[1]);
+            emit(s, LVM_ABC(jcc[i].op, jcc[i].flag, jcc[i].swap ? c : b, jcc[i].swap ? b : c));
+            emit(s, LVM_ASBX(OP_JMP, 0, 0));
+            add_fixup(s, 1, ops[2]);
+            return;
+        }
+    }
+    for (i = 0; i < sizeof insns / sizeof insns[0]; i++) {
+        if (ieq(w, insns[i].name)) {
+            emit_sig(s, &insns[i], ops, n);
+            return;
+        }
+    }
+    die(s, "unknown instruction '%s'", w);
+}
+
+static void directive(as *s, const char *w, char **ops, int n)
+{
+    func *f = cur(s);
+    int64_t v;
+
+    if (ieq(w, ".params") || ieq(w, ".regs")) {
+        if (n != 1 || !parse_int(s, ops[0], &v) || v < 0 || v > 255)
+            die(s, "%s takes a number 0..255", w);
+        if (ieq(w, ".params")) f->nparams = (unsigned)v;
+        else f->regs = (unsigned)v;
+    } else if (ieq(w, ".upval")) {
+        /* .upval stack Rn: capture register n of the creating function
+         * .upval up n:     copy upvalue n of the creating closure */
+        unsigned idx;
+        int in_stack;
+        if (n != 2) die(s, ".upval takes 'stack <register>' or 'up <index>'");
+        in_stack = ieq(ops[0], "stack");
+        if (!in_stack && !ieq(ops[0], "up")) die(s, ".upval kind must be 'stack' or 'up'");
+        if (!reg_number(ops[1], &idx)) {
+            if (!parse_int(s, ops[1], &v) || v < 0 || v > 255)
+                die(s, ".upval index must be R0..R%d or 0..255", MAX_REG);
+            idx = (unsigned)v;
+        }
+        if (idx > 255) die(s, ".upval index is out of range");
+        if (f->nup == 255) die(s, "too many upvalues");
+        f->ups[f->nup].instack = (uint8_t)(in_stack ? 1 : 0);
+        f->ups[f->nup].index = (uint8_t)idx;
+        f->nup++;
+    } else {
+        die(s, "unknown directive '%s'", w);
+    }
+}
