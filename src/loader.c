@@ -7,6 +7,7 @@
 #define MAX_CONSTS 65536u
 #define MAX_FUNCS  65536u
 #define MAX_CODE   (1u << 24)
+#define MAX_STRING (1u << 24)
 
 typedef struct {
     const uint8_t *p, *end;
@@ -57,7 +58,7 @@ static uint64_t rd64(reader *r)
     return lo | hi << 32;
 }
 
-static lvm_status read_const(reader *r, lvm_value *out)
+static lvm_status read_const(reader *r, const lvm_allocator *a, lvm_value *out)
 {
     switch (rd8(r)) {
     case 0:
@@ -82,6 +83,16 @@ static lvm_status read_const(reader *r, lvm_value *out)
         *out = lvm_float(d);
         return LVM_OK;
     }
+    case 4: {
+        uint32_t n = rd32(r);
+        lvm_string *s;
+        if (r->bad || n > MAX_STRING || n > left(r)) return LVM_ERR_FORMAT;
+        s = lvm_string_perm(a, (const char *)r->p, n);
+        if (!s) return LVM_ERR_MEM;
+        r->p += n;
+        *out = lvm_from_obj(&s->o);
+        return LVM_OK;
+    }
     default:
         return LVM_ERR_FORMAT;
     }
@@ -99,8 +110,13 @@ void lvm_module_free(lvm_module *m)
         }
         LVM_MEM(a, m->funcs, (size_t)m->nfuncs * sizeof(lvm_func), 0);
     }
-    if (m->consts)
+    if (m->consts) {
+        for (i = 0; i < m->nconsts; i++) {
+            if (lvm_is_ptr(m->consts[i]))
+                lvm_string_free_perm(a, (lvm_string *)lvm_to_obj(m->consts[i]));
+        }
         LVM_MEM(a, m->consts, (size_t)m->nconsts * sizeof(lvm_value), 0);
+    }
     memset(m, 0, sizeof *m);
 }
 
@@ -131,6 +147,7 @@ lvm_status lvm_load(const lvm_allocator *a, const uint8_t *buf, size_t len, lvm_
     if (nk) {
         m->consts = LVM_MEM(a, NULL, 0, (size_t)nk * sizeof(lvm_value));
         if (!m->consts) return LVM_ERR_MEM;
+        memset(m->consts, 0, (size_t)nk * sizeof(lvm_value));
         m->nconsts = nk;
     }
     m->funcs = LVM_MEM(a, NULL, 0, (size_t)nf * sizeof(lvm_func));
@@ -142,7 +159,7 @@ lvm_status lvm_load(const lvm_allocator *a, const uint8_t *buf, size_t len, lvm_
     m->nfuncs = nf;
 
     for (i = 0; i < nk; i++) {
-        st = read_const(&r, &m->consts[i]);
+        st = read_const(&r, a, &m->consts[i]);
         if (st == LVM_OK && r.bad) st = LVM_ERR_FORMAT;
         if (st != LVM_OK) goto fail;
     }
