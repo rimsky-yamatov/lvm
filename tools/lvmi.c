@@ -9,6 +9,12 @@ static void print_value(lvm_value v)
     if (lvm_is_float(v))     printf("%.17g", lvm_as_float(v));
     else if (lvm_is_int(v))  printf("%lld", (long long)lvm_as_int(v));
     else if (lvm_is_bool(v)) fputs(lvm_as_bool(v) ? "true" : "false", stdout);
+    else if (lvm_is_string(v)) {
+        size_t n;
+        const char *d = lvm_string_data(v, &n);
+        fwrite(d, 1, n, stdout);
+    }
+    else if (!lvm_is_nil(v)) printf("<%s>", lvm_type_name(v));
     else                     fputs("nil", stdout);
 }
 
