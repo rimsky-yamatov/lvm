@@ -122,7 +122,7 @@ static int veq(lvm_value x, lvm_value y)
     double a, b;
     if (lvm_is_int(x) && lvm_is_int(y)) return x == y;
     if (num(x, &a) && num(y, &b)) return a == b;
-    return x == y;
+    return lvm_obj_equal(x, y); /* strings compare by content */
 }
 
 /* Comparison skips the following JMP unless the result equals A. */
@@ -177,7 +177,12 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         [OP_JF] = &&L_OP_JF,
         [OP_CALL] = &&L_OP_CALL,
         [OP_RET] = &&L_OP_RET,
-        [OP_HOST] = &&L_OP_HOST
+        [OP_HOST] = &&L_OP_HOST,
+        [OP_NEWARR] = &&L_OP_NEWARR,
+        [OP_NEWMAP] = &&L_OP_NEWMAP,
+        [OP_GET] = &&L_OP_GET,
+        [OP_SET] = &&L_OP_SET,
+        [OP_LEN] = &&L_OP_LEN
     };
 #endif
 
@@ -323,6 +328,40 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         SYNC();
         st = h->fn(h->ud, &R[LVM_A(i)], (int)LVM_B(i));
         if (st != LVM_OK) goto fail;
+        NEXT();
+    }
+    CASE(OP_NEWARR) {
+        lvm_value v;
+        SYNC();
+        v = lvm_obj_array_new(vm, LVM_B(i));
+        if (lvm_is_nil(v)) { st = LVM_ERR_MEM; goto fail; }
+        R[LVM_A(i)] = v;
+        NEXT();
+    }
+    CASE(OP_NEWMAP) {
+        lvm_value v;
+        SYNC();
+        v = lvm_obj_map_new(vm, LVM_B(i));
+        if (lvm_is_nil(v)) { st = LVM_ERR_MEM; goto fail; }
+        R[LVM_A(i)] = v;
+        NEXT();
+    }
+    CASE(OP_GET) {
+        lvm_value v;
+        st = lvm_obj_get(R[LVM_B(i)], R[LVM_C(i)], &v);
+        if (st != LVM_OK) goto fail;
+        R[LVM_A(i)] = v;
+        NEXT();
+    }
+    CASE(OP_SET)
+        st = lvm_obj_set(vm, R[LVM_A(i)], R[LVM_B(i)], R[LVM_C(i)]);
+        if (st != LVM_OK) goto fail;
+        NEXT();
+    CASE(OP_LEN) {
+        lvm_value v;
+        st = lvm_obj_len(R[LVM_B(i)], &v);
+        if (st != LVM_OK) goto fail;
+        R[LVM_A(i)] = v;
         NEXT();
     }
     LVM_DISPATCH_END
