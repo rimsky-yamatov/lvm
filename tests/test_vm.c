@@ -648,6 +648,215 @@ static void test_data_format(void)
     CHECK(load_only() == LVM_ERR_VERIFY);
 }
 
+/* ---- closures ---- */
+
+static void test_closure_counter(void)
+{
+    lvm_value r;
+
+    /* f() increments a captured local; the local is shared while open */
+    begin(0, 2, 0);
+    FUNC(0, 5,
+         LVM_ASBX(OP_LDI, 0, 0),
+         LVM_ABX(OP_CLOSURE, 1, 1),
+         LVM_ABC(OP_MOV, 2, 1, 0),
+         LVM_ABC(OP_CALLC, 2, 0, 0),
+         LVM_ABC(OP_MOV, 3, 1, 0),
+         LVM_ABC(OP_CALLC, 3, 0, 0),
+         LVM_ABC(OP_ADD, 4, 2, 3),
+         LVM_ABC(OP_ADD, 4, 4, 0),
+         LVM_ABC(OP_RET, 4, 0, 0));
+    UP(1, 0);
+    FUNC(0, 2,
+         LVM_ABC(OP_GETUP, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 1),
+         LVM_ABC(OP_ADD, 0, 0, 1),
+         LVM_ABC(OP_SETUP, 0, 0, 0),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 1 + 2 + 2);
+}
+
+static void test_closure_outlives_frame(void)
+{
+    lvm_value r;
+
+    /* make_adder(n) returns a closure over n; n is closed when make_adder returns */
+    begin(0, 3, 0);
+    FUNC(0, 3,
+         LVM_ASBX(OP_LDI, 0, 100),
+         LVM_ABX(OP_CALL, 0, 1),
+         LVM_ASBX(OP_LDI, 1, 5),
+         LVM_ABC(OP_CALLC, 0, 1, 0),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    FUNC(1, 2,
+         LVM_ABX(OP_CLOSURE, 1, 2),
+         LVM_ABC(OP_RET, 1, 0, 0));
+    UP(1, 0);
+    FUNC(1, 3,
+         LVM_ABC(OP_GETUP, 1, 0, 0),
+         LVM_ABC(OP_ADD, 0, 0, 1),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 105);
+}
+
+static void test_closure_shared_upvalue(void)
+{
+    lvm_value r;
+
+    /* two closures over the same variable see each other's writes */
+    begin(0, 3, 0);
+    FUNC(0, 5,
+         LVM_ASBX(OP_LDI, 0, 0),
+         LVM_ABX(OP_CLOSURE, 1, 1),
+         LVM_ABX(OP_CLOSURE, 2, 2),
+         LVM_ABC(OP_MOV, 3, 1, 0), LVM_ABC(OP_CALLC, 3, 0, 0),
+         LVM_ABC(OP_MOV, 3, 1, 0), LVM_ABC(OP_CALLC, 3, 0, 0),
+         LVM_ABC(OP_MOV, 3, 1, 0), LVM_ABC(OP_CALLC, 3, 0, 0),
+         LVM_ABC(OP_MOV, 4, 2, 0), LVM_ABC(OP_CALLC, 4, 0, 0),
+         LVM_ABC(OP_RET, 4, 0, 0));
+    UP(1, 0);
+    FUNC(0, 2,
+         LVM_ABC(OP_GETUP, 0, 0, 0), LVM_ASBX(OP_LDI, 1, 1),
+         LVM_ABC(OP_ADD, 0, 0, 1), LVM_ABC(OP_SETUP, 0, 0, 0),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    UP(1, 0);
+    FUNC(0, 1, LVM_ABC(OP_GETUP, 0, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 3);
+}
+
+static void test_closure_nested(void)
+{
+    lvm_value r;
+
+    /* inner captures x through mid's upvalue (instack = 0) */
+    begin(0, 3, 0);
+    FUNC(0, 3,
+         LVM_ASBX(OP_LDI, 0, 7),
+         LVM_ABX(OP_CLOSURE, 1, 1),
+         LVM_ABC(OP_CALLC, 1, 0, 0),
+         LVM_ABC(OP_CALLC, 1, 0, 0),
+         LVM_ABC(OP_RET, 1, 0, 0));
+    UP(1, 0);
+    FUNC(0, 2, LVM_ABX(OP_CLOSURE, 0, 2), LVM_ABC(OP_RET, 0, 0, 0));
+    UP(0, 0);
+    FUNC(0, 2,
+         LVM_ABC(OP_GETUP, 0, 0, 0), LVM_ASBX(OP_LDI, 1, 1),
+         LVM_ABC(OP_ADD, 0, 0, 1), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 8);
+}
+
+static void test_closure_close_per_iteration(void)
+{
+    lvm_value r;
+
+    /* CLOSE gives each iteration its own variable: 0 + 1 + 2 (not 2 + 2 + 2) */
+    begin(0, 2, 0);
+    FUNC(0, 8,
+         LVM_ABC(OP_NEWARR, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 0),
+         LVM_ASBX(OP_LDI, 2, 3),
+         LVM_ASBX(OP_LDI, 3, 1),
+         LVM_ABC(OP_MOV, 4, 1, 0),                 /*  4 */
+         LVM_ABX(OP_CLOSURE, 5, 1),
+         LVM_ABC(OP_CLOSE, 4, 0, 0),
+         LVM_ABC(OP_SET, 0, 1, 5),
+         LVM_ABC(OP_ADD, 1, 1, 3),
+         LVM_ABC(OP_LT, 1, 1, 2),
+         LVM_ASBX(OP_JMP, 0, -7),
+         LVM_ASBX(OP_LDI, 1, 0),
+         LVM_ASBX(OP_LDI, 7, 0),
+         LVM_ABC(OP_GET, 5, 0, 1),                 /* 13 */
+         LVM_ABC(OP_CALLC, 5, 0, 0),
+         LVM_ABC(OP_ADD, 7, 7, 5),
+         LVM_ABC(OP_ADD, 1, 1, 3),
+         LVM_ABC(OP_LT, 1, 1, 2),
+         LVM_ASBX(OP_JMP, 0, -6),
+         LVM_ABC(OP_RET, 7, 0, 0));
+    UP(1, 4);
+    FUNC(0, 1, LVM_ABC(OP_GETUP, 0, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 3);
+}
+
+static void test_closure_errors(void)
+{
+    lvm_value r;
+
+    begin(0, 1, 0);
+    FUNC(0, 2, LVM_ASBX(OP_LDI, 0, 1), LVM_ABC(OP_CALLC, 0, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_ERR_TYPE); /* not a closure */
+
+    begin(0, 2, 0);
+    FUNC(0, 2, LVM_ABX(OP_CLOSURE, 0, 1), LVM_ABC(OP_CALLC, 0, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    FUNC(1, 2, LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_ERR_ARGS); /* wrong argument count */
+}
+
+static void test_closure_gc(void)
+{
+    lvm_value r;
+
+    /* the array is only reachable through a closed upvalue while garbage piles up */
+    begin(0, 3, 0);
+    FUNC(0, 7,
+         LVM_ABC(OP_NEWARR, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 9),
+         LVM_ASBX(OP_LDI, 2, 0),
+         LVM_ABC(OP_SET, 0, 2, 1),
+         LVM_ABX(OP_CALL, 0, 1),
+         LVM_ASBX(OP_LDI, 3, 0),
+         LVM_ASBX(OP_LDI, 4, 3000),
+         LVM_ASBX(OP_LDI, 5, 1),
+         LVM_ABC(OP_NEWMAP, 6, 4, 0),              /*  8 */
+         LVM_ABC(OP_ADD, 3, 3, 5),
+         LVM_ABC(OP_LT, 1, 3, 4),
+         LVM_ASBX(OP_JMP, 0, -4),
+         LVM_ABC(OP_CALLC, 0, 0, 0),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    FUNC(1, 2, LVM_ABX(OP_CLOSURE, 1, 2), LVM_ABC(OP_RET, 1, 0, 0));
+    UP(1, 0);
+    FUNC(0, 2,
+         LVM_ABC(OP_GETUP, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 1, 0),
+         LVM_ABC(OP_GET, 0, 0, 1),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    g_gc_min = 512;
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 9);
+    g_gc_min = 0;
+}
+
+static void test_closure_verification(void)
+{
+    begin(0, 1, 0);
+    FUNC(0, 2, LVM_ABC(OP_GETUP, 0, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* no such upvalue */
+
+    begin(0, 1, 0);
+    UP(1, 0);
+    FUNC(0, 1, LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* entry cannot have upvalues */
+
+    begin(0, 2, 0);
+    FUNC(0, 2, LVM_ABX(OP_CLOSURE, 0, 1), LVM_ABC(OP_RET, 0, 0, 0));
+    UP(1, 5);
+    FUNC(0, 1, LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* captures a register that does not exist */
+
+    begin(0, 2, 0);
+    FUNC(0, 2, LVM_ABX(OP_CALL, 0, 1), LVM_ABC(OP_RET, 0, 0, 0));
+    UP(1, 0);
+    FUNC(0, 1, LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* static call of a closure-only function */
+
+    begin(0, 1, 0);
+    FUNC(0, 2, LVM_ABC(OP_CALLC, 1, 5, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY); /* argument window outside the frame */
+
+    begin(0, 1, 0);
+    UP(2, 0);
+    FUNC(0, 1, LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_FORMAT); /* bad capture kind */
+}
+
 int main(void)
 {
     test_int_arith();
@@ -672,6 +881,15 @@ int main(void)
 
     test_gc();
     test_data_format();
+
+    test_closure_counter();
+    test_closure_outlives_frame();
+    test_closure_shared_upvalue();
+    test_closure_nested();
+    test_closure_close_per_iteration();
+    test_closure_errors();
+    test_closure_gc();
+    test_closure_verification();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
