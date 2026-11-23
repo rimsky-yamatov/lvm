@@ -12,25 +12,29 @@
  * fail halfway through.
  */
 
-static void mark_value(lvm_vm *vm, lvm_value v)
+static void mark_obj(lvm_vm *vm, lvm_obj *o)
 {
-    lvm_obj *o;
-
-    if (!lvm_is_ptr(v)) return;
-    o = lvm_to_obj(v);
     if (o->perm || o->mark) return;
     o->mark = 1;
     if (o->type != LVM_OBJ_STRING) vm->gray[vm->ngray++] = o;
+}
+
+static void mark_value(lvm_vm *vm, lvm_value v)
+{
+    if (lvm_is_ptr(v)) mark_obj(vm, lvm_to_obj(v));
 }
 
 static void trace(lvm_vm *vm, lvm_obj *o)
 {
     uint32_t i;
 
-    if (o->type == LVM_OBJ_ARRAY) {
+    switch (o->type) {
+    case LVM_OBJ_ARRAY: {
         const lvm_array *a = (const lvm_array *)o;
         for (i = 0; i < a->len; i++) mark_value(vm, a->items[i]);
-    } else {
+        break;
+    }
+    case LVM_OBJ_MAP: {
         const lvm_map *m = (const lvm_map *)o;
         for (i = 0; i < m->cap; i++) {
             if (m->tab[i].key != LVM_EMPTY_KEY) {
@@ -38,12 +42,25 @@ static void trace(lvm_vm *vm, lvm_obj *o)
                 mark_value(vm, m->tab[i].val);
             }
         }
+        break;
+    }
+    case LVM_OBJ_CLOSURE: {
+        const lvm_closure *c = (const lvm_closure *)o;
+        for (i = 0; i < c->nup; i++) {
+            if (c->up[i]) mark_obj(vm, &c->up[i]->o);
+        }
+        break;
+    }
+    case LVM_OBJ_UPVAL:
+        mark_value(vm, *((const lvm_upval *)o)->v);
+        break;
     }
 }
 
 lvm_status lvm_gc_collect(lvm_vm *vm)
 {
     lvm_obj *o, **pp;
+    lvm_upval **up;
     size_t top = 0, i;
     uint32_t d;
 
@@ -58,13 +75,21 @@ lvm_status lvm_gc_collect(lvm_vm *vm)
 
     if (vm->cur_fn) {
         top = (size_t)vm->cur_base + vm->cur_fn->nregs;
+        if (vm->cur_cl) mark_obj(vm, &vm->cur_cl->o);
         for (d = 0; d < vm->depth; d++) {
             size_t t = (size_t)vm->frames[d].base + vm->frames[d].fn->nregs;
             if (t > top) top = t;
+            if (vm->frames[d].cl) mark_obj(vm, &vm->frames[d].cl->o);
         }
     }
     for (i = 0; i < top; i++) mark_value(vm, vm->stack[i]);
     while (vm->ngray) trace(vm, vm->gray[--vm->ngray]);
+
+    /* dead upvalues must leave the open list before they are freed */
+    for (up = &vm->open; *up;) {
+        if ((*up)->o.mark) up = &(*up)->next;
+        else *up = (*up)->next;
+    }
 
     pp = &vm->objs;
     while ((o = *pp) != NULL) {
