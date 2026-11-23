@@ -17,6 +17,7 @@ typedef enum {
     OP_JMP, OP_JT, OP_JF,
     OP_CALL, OP_RET,
     OP_HOST,
+    OP_NEWARR, OP_NEWMAP, OP_GET, OP_SET, OP_LEN,
     OP_COUNT
 } lvm_opcode;
 
