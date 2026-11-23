@@ -53,6 +53,8 @@ static int verify_func(const lvm_module *m, const lvm_func *f)
         case OP_CALL:
             if (!REG(a, nr) || LVM_BX(i) >= m->nfuncs) return 0;
             if (a + m->funcs[LVM_BX(i)].nparams > nr) return 0;
+            /* functions with upvalues only run as closures */
+            if (m->funcs[LVM_BX(i)].nupvals) return 0;
             break;
         case OP_RET:
             if (!REG(a, nr)) return 0;
@@ -69,6 +71,27 @@ static int verify_func(const lvm_module *m, const lvm_func *f)
         case OP_LEN:
             if (!REG(a, nr) || !REG(b, nr)) return 0;
             break;
+        case OP_CLOSURE: {
+            const lvm_func *p;
+            uint32_t k;
+            if (!REG(a, nr) || LVM_BX(i) >= m->nfuncs) return 0;
+            p = &m->funcs[LVM_BX(i)];
+            for (k = 0; k < p->nupvals; k++) {
+                unsigned idx = p->upvals[k].index;
+                if (p->upvals[k].instack ? !REG(idx, nr) : idx >= f->nupvals) return 0;
+            }
+            break;
+        }
+        case OP_GETUP: case OP_SETUP:
+            if (!REG(a, nr) || b >= f->nupvals) return 0;
+            break;
+        case OP_CLOSE:
+            if (!REG(a, nr)) return 0;
+            break;
+        case OP_CALLC:
+            /* closure in R[A], arguments in R[A+1..A+B] */
+            if (!REG(a, nr) || a + b >= nr) return 0;
+            break;
         default:
             return 0;
         }
@@ -81,6 +104,7 @@ lvm_status lvm_verify(const lvm_module *m)
     uint32_t i;
 
     if (m->nfuncs == 0 || m->entry >= m->nfuncs) return LVM_ERR_VERIFY;
+    if (m->funcs[m->entry].nupvals) return LVM_ERR_VERIFY; /* entry has no closure */
     for (i = 0; i < m->nfuncs; i++) {
         if (!verify_func(m, &m->funcs[i])) return LVM_ERR_VERIFY;
     }
