@@ -34,6 +34,7 @@ lvm_vm *lvm_new(const lvm_allocator *a, uint32_t stack_slots, uint32_t max_frame
     vm->stack_slots = stack_slots;
     vm->frames = frames;
     vm->max_frames = max_frames;
+    vm->threshold = vm->gc_min = LVM_GC_MIN;
     return vm;
 }
 
@@ -43,6 +44,8 @@ void lvm_free(lvm_vm *vm)
 
     if (!vm) return;
     a = vm->alloc;
+    lvm_obj_free_all(vm);
+    lvm_gc_free(vm);
     LVM_MEM(&a, vm->stack, (size_t)vm->stack_slots * sizeof *vm->stack, 0);
     LVM_MEM(&a, vm->frames, (size_t)vm->max_frames * sizeof *vm->frames, 0);
     LVM_MEM(&a, vm, sizeof *vm, 0);
@@ -136,6 +139,9 @@ static int veq(lvm_value x, lvm_value y)
     if (c_ != (int)LVM_A(i)) pc++;                                           \
 } while (0)
 
+/* publish the current frame so the collector can find every live register */
+#define SYNC() do { vm->cur_fn = fn; vm->cur_base = base; vm->depth = depth; } while (0)
+
 lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
                    const lvm_value *args, int nargs, lvm_value *result)
 {
@@ -185,6 +191,7 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         lvm_value v = R[LVM_A(i)];
         if (depth == 0) {
             if (result) *result = v;
+            vm->cur_fn = NULL;
             return LVM_OK;
         }
         R[0] = v; /* callee R[0] aliases the caller's call register */
@@ -313,6 +320,7 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     CASE(OP_HOST) {
         const lvm_host_slot *h = &vm->host[LVM_C(i)];
         if (!h->fn) { st = LVM_ERR_HOST; goto fail; }
+        SYNC();
         st = h->fn(h->ud, &R[LVM_A(i)], (int)LVM_B(i));
         if (st != LVM_OK) goto fail;
         NEXT();
@@ -320,5 +328,6 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     LVM_DISPATCH_END
 
 fail:
+    vm->cur_fn = NULL;
     return st;
 }

@@ -33,8 +33,11 @@ size_t lvm_obj_bytes(const lvm_obj *o)
 
 lvm_obj *lvm_obj_new(lvm_vm *vm, int type, size_t size)
 {
-    lvm_obj *o = LVM_MEM(&vm->alloc, NULL, 0, size);
+    lvm_obj *o;
 
+    if (vm->bytes + size > vm->threshold && lvm_gc_collect(vm) != LVM_OK)
+        return NULL;
+    o = LVM_MEM(&vm->alloc, NULL, 0, size);
     if (!o) return NULL;
     if (!ptr_fits(o)) {
         LVM_MEM(&vm->alloc, o, size, 0);
