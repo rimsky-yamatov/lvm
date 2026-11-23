@@ -54,11 +54,23 @@ static void k_str(const char *s)
     for (i = 0; i < n; i++) u8((unsigned char)s[i]);
 }
 
+static uint8_t g_up[32]; /* upvalue descriptors for the next func() */
+static unsigned g_nup;
+
+#define UP(instack, idx) do {                                             \
+    g_up[g_nup * 2] = (instack);                                          \
+    g_up[g_nup * 2 + 1] = (idx);                                          \
+    g_nup++;                                                              \
+} while (0)
+
 static void func(unsigned np, unsigned nr, const uint32_t *code, uint32_t n)
 {
     uint32_t i;
     u8(np);
     u8(nr);
+    u8(g_nup);
+    for (i = 0; i < g_nup * 2; i++) u8(g_up[i]);
+    g_nup = 0;
     u32(n);
     for (i = 0; i < n; i++) u32(code[i]);
 }

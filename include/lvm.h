@@ -39,9 +39,18 @@ const char *lvm_strerror(lvm_status st);
 
 /* ---- module ---- */
 
+/* how a closure captures one of its upvalues when it is created */
+typedef struct lvm_updesc {
+    uint8_t instack; /* 1: register `index` of the creating frame,
+                        0: upvalue `index` of the creating closure */
+    uint8_t index;
+} lvm_updesc;
+
 typedef struct lvm_func {
     uint8_t nparams;
     uint8_t nregs;
+    uint8_t nupvals;
+    lvm_updesc *upvals;
     uint32_t ncode;
     uint32_t *code;
 } lvm_func;

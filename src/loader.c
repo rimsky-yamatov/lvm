@@ -107,6 +107,8 @@ void lvm_module_free(lvm_module *m)
         for (i = 0; i < m->nfuncs; i++) {
             if (m->funcs[i].code)
                 LVM_MEM(a, m->funcs[i].code, (size_t)m->funcs[i].ncode * sizeof(uint32_t), 0);
+            if (m->funcs[i].upvals)
+                LVM_MEM(a, m->funcs[i].upvals, (size_t)m->funcs[i].nupvals * sizeof(lvm_updesc), 0);
         }
         LVM_MEM(a, m->funcs, (size_t)m->nfuncs * sizeof(lvm_func), 0);
     }
@@ -168,8 +170,31 @@ lvm_status lvm_load(const lvm_allocator *a, const uint8_t *buf, size_t len, lvm_
         lvm_func *f = &m->funcs[i];
         uint32_t np = rd8(&r);
         uint32_t nr = rd8(&r);
-        uint32_t nc = rd32(&r);
+        uint32_t nu = rd8(&r);
+        uint32_t nc;
 
+        if (r.bad || (size_t)nu * 2 > left(&r)) {
+            st = LVM_ERR_FORMAT;
+            goto fail;
+        }
+        if (nu) {
+            f->upvals = LVM_MEM(a, NULL, 0, nu * sizeof(lvm_updesc));
+            if (!f->upvals) {
+                st = LVM_ERR_MEM;
+                goto fail;
+            }
+            f->nupvals = (uint8_t)nu;
+            for (j = 0; j < nu; j++) {
+                uint32_t instack = rd8(&r);
+                f->upvals[j].instack = (uint8_t)instack;
+                f->upvals[j].index = (uint8_t)rd8(&r);
+                if (instack > 1) {
+                    st = LVM_ERR_FORMAT;
+                    goto fail;
+                }
+            }
+        }
+        nc = rd32(&r);
         if (r.bad || nc == 0 || nc > MAX_CODE || nc > left(&r) / 4) {
             st = LVM_ERR_FORMAT;
             goto fail;
