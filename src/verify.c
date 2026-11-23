@@ -60,6 +60,15 @@ static int verify_func(const lvm_module *m, const lvm_func *f)
         case OP_HOST:
             if (!REG(a, nr) || a + b > nr) return 0;
             break;
+        case OP_NEWARR: case OP_NEWMAP:
+            if (!REG(a, nr)) return 0;
+            break;
+        case OP_GET: case OP_SET:
+            if (!REG(a, nr) || !REG(b, nr) || !REG(c, nr)) return 0;
+            break;
+        case OP_LEN:
+            if (!REG(a, nr) || !REG(b, nr)) return 0;
+            break;
         default:
             return 0;
         }
