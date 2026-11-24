@@ -7,7 +7,7 @@ Small register-based bytecode VM.
 - 64-bit NaN-boxed values (nil, bool, int48, float64, string, array, map)
 - closures with open/closed upvalues
 - exceptions (`TRY` / `THROW`), including runtime errors
-- a text assembler (`lvma`)
+- a text assembler (`lvma`) and disassembler (`lvmdis`)
 - precise mark-and-sweep GC
 - bytecode verifier: bad registers, jumps, constants and calls are
   rejected at load time, so untrusted bytecode can be run
@@ -65,10 +65,11 @@ main:
 ```
 lvma prog.lvma -o prog.lvmb
 lvmi prog.lvmb          # or: lvmi prog.lvma
+lvmdis prog.lvmb        # back to assembly
 ```
 
 ## Docs
 
 - `docs/format.md` - file format
 - `docs/isa.md` - instructions and verifier rules
-- `docs/asm.md` - assembly language
+- `docs/asm.md` - assembly language and disassembler

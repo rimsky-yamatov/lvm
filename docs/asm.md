@@ -105,4 +105,21 @@ upward, so keep live values below `Ra`.
 result replaces `Ra`. Functions with `.upval` lines are created with
 `CLOSURE` and called with `CALLC`.
 
+## Disassembling
+
+```
+lvmdis prog.lvmb        # print assembly
+lvmdis -a prog.lvmb     # also show each instruction's pc and word
+```
+
+`lvmdis` accepts bytecode or assembly source. From C, use
+`lvm_disassemble` on a loaded module.
+
+The output is assembly again. The entry function is called `main`, the others
+`f1`, `f2`, ... after their index, and every jump target gets a label
+`.L<pc>`. A comparison followed by its jump is shown as one `Jcc` line. The
+text assembles back to the same bytecode as the original, as long as the
+original came from `lvma`; names, comments and label names of the source are
+not kept in the bytecode, so they do not come back.
+
 See `examples/` for complete programs.
