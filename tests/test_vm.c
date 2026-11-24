@@ -857,6 +857,140 @@ static void test_closure_verification(void)
     CHECK(load_only() == LVM_ERR_FORMAT); /* bad capture kind */
 }
 
+/* ---- exceptions ---- */
+
+static void test_exceptions(void)
+{
+    lvm_value r;
+
+    /* THROW in the frame that installed the handler */
+    begin(0, 1, 0);
+    FUNC(0, 3,
+         LVM_ASBX(OP_TRY, 1, 4),
+         LVM_ASBX(OP_LDI, 2, 99),
+         LVM_ABC(OP_THROW, 2, 0, 0),
+         LVM_ABC(OP_ENDTRY, 0, 0, 0),
+         LVM_ABC(OP_RET, 2, 0, 0),
+         LVM_ABC(OP_RET, 1, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 99);
+
+    /* no throw: the handler is dropped by ENDTRY */
+    begin(0, 1, 0);
+    FUNC(0, 3,
+         LVM_ASBX(OP_TRY, 1, 3),
+         LVM_ASBX(OP_LDI, 2, 5),
+         LVM_ABC(OP_ENDTRY, 0, 0, 0),
+         LVM_ABC(OP_RET, 2, 0, 0),
+         LVM_ABC(OP_RET, 1, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 5);
+
+    /* thrown by a callee, caught by the caller */
+    begin(0, 2, 0);
+    FUNC(0, 3,
+         LVM_ASBX(OP_TRY, 1, 3),
+         LVM_ABX(OP_CALL, 2, 1),
+         LVM_ABC(OP_ENDTRY, 0, 0, 0),
+         LVM_ABC(OP_RET, 2, 0, 0),
+         LVM_ABC(OP_RET, 1, 0, 0));
+    FUNC(0, 2, LVM_ASBX(OP_LDI, 0, 7), LVM_ABC(OP_THROW, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 7);
+
+    /* the inner handler rethrows a new value to the outer one */
+    begin(0, 1, 0);
+    FUNC(0, 5,
+         LVM_ASBX(OP_TRY, 1, 8),
+         LVM_ASBX(OP_TRY, 2, 4),
+         LVM_ASBX(OP_LDI, 3, 1),
+         LVM_ABC(OP_THROW, 3, 0, 0),
+         LVM_ASBX(OP_LDI, 0, 0),
+         LVM_ABC(OP_RET, 0, 0, 0),
+         LVM_ASBX(OP_LDI, 4, 10),
+         LVM_ABC(OP_ADD, 4, 4, 2),
+         LVM_ABC(OP_THROW, 4, 0, 0),
+         LVM_ABC(OP_RET, 1, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 11);
+
+    /* a division by zero inside TRY arrives as a message string */
+    begin(0, 1, 0);
+    FUNC(0, 6,
+         LVM_ASBX(OP_TRY, 1, 5),
+         LVM_ASBX(OP_LDI, 2, 1),
+         LVM_ASBX(OP_LDI, 3, 0),
+         LVM_ABC(OP_DIV, 4, 2, 3),
+         LVM_ABC(OP_ENDTRY, 0, 0, 0),
+         LVM_ABC(OP_RET, 4, 0, 0),
+         LVM_ABC(OP_LEN, 5, 1, 0),
+         LVM_ABC(OP_RET, 5, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 16); /* "division by zero" */
+
+    /* nothing catches it: the thrown value comes back with LVM_ERR_UNCAUGHT */
+    begin(0, 1, 0);
+    FUNC(0, 1, LVM_ASBX(OP_LDI, 0, 5), LVM_ABC(OP_THROW, 0, 0, 0));
+    CHECK(run(&r) == LVM_ERR_UNCAUGHT && lvm_as_int(r) == 5);
+}
+
+static void test_exception_frames(void)
+{
+    lvm_value r;
+
+    /* a handler left behind by a returned function must not catch later throws */
+    begin(0, 2, 0);
+    FUNC(0, 4,
+         LVM_ASBX(OP_TRY, 0, 6),
+         LVM_ABX(OP_CALL, 1, 1),
+         LVM_ASBX(OP_LDI, 2, 3),
+         LVM_ABC(OP_THROW, 2, 0, 0),
+         LVM_ABC(OP_ENDTRY, 0, 0, 0),
+         LVM_ABC(OP_RET, 1, 0, 0),
+         LVM_ABC(OP_RET, 1, 0, 0),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    FUNC(0, 2,
+         LVM_ASBX(OP_TRY, 0, 2),
+         LVM_ASBX(OP_LDI, 1, 0),
+         LVM_ABC(OP_RET, 1, 0, 0),
+         LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 3);
+
+    /* unwinding closes the upvalues of the frames it leaves */
+    begin(0, 3, 0);
+    FUNC(0, 6,
+         LVM_ABC(OP_NEWARR, 0, 0, 0),
+         LVM_ASBX(OP_TRY, 1, 4),
+         LVM_ABC(OP_MOV, 2, 0, 0),
+         LVM_ABX(OP_CALL, 2, 1),
+         LVM_ABC(OP_ENDTRY, 0, 0, 0),
+         LVM_ABC(OP_RET, 2, 0, 0),
+         LVM_ASBX(OP_LDI, 3, 0),
+         LVM_ABC(OP_GET, 4, 0, 3),
+         LVM_ABC(OP_CALLC, 4, 0, 0),
+         LVM_ABC(OP_RET, 4, 0, 0));
+    FUNC(1, 4,
+         LVM_ASBX(OP_LDI, 1, 77),
+         LVM_ABX(OP_CLOSURE, 2, 2),
+         LVM_ASBX(OP_LDI, 3, 0),
+         LVM_ABC(OP_SET, 0, 3, 2),
+         LVM_ASBX(OP_LDI, 3, 5),
+         LVM_ABC(OP_THROW, 3, 0, 0));
+    UP(1, 1);
+    FUNC(0, 1, LVM_ABC(OP_GETUP, 0, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_OK && lvm_as_int(r) == 77);
+
+    /* ENDTRY with no handler of its own is invalid bytecode */
+    begin(0, 1, 0);
+    FUNC(0, 1, LVM_ABC(OP_ENDTRY, 0, 0, 0), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(run(&r) == LVM_ERR_VERIFY);
+
+    /* installing handlers without end overflows the handler stack */
+    begin(0, 1, 0);
+    FUNC(0, 1, LVM_ASBX(OP_TRY, 0, 0), LVM_ASBX(OP_JMP, 0, -2));
+    CHECK(run(&r) == LVM_ERR_STACK);
+
+    /* the handler target must exist */
+    begin(0, 1, 0);
+    FUNC(0, 2, LVM_ASBX(OP_TRY, 1, 50), LVM_ABC(OP_RET, 0, 0, 0));
+    CHECK(load_only() == LVM_ERR_VERIFY);
+}
+
 int main(void)
 {
     test_int_arith();
@@ -890,6 +1024,9 @@ int main(void)
     test_closure_errors();
     test_closure_gc();
     test_closure_verification();
+
+    test_exceptions();
+    test_exception_frames();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
