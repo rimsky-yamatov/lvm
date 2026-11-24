@@ -3,7 +3,7 @@
 Small register-based bytecode VM.
 
 - pure C99, no JIT, no OS dependencies (the host provides I/O)
-- 32-bit fixed-width instructions, 36 opcodes
+- 32-bit fixed-width instructions, 39 opcodes
 - 64-bit NaN-boxed values (nil, bool, int48, float64, string, array, map)
 - closures with open/closed upvalues
 - exceptions (`TRY` / `THROW`), including runtime errors
