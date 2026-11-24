@@ -573,6 +573,16 @@ static void directive(as *s, const char *w, char **ops, int n)
          * .upval up n:     copy upvalue n of the creating closure */
         unsigned idx;
         int in_stack;
+        if (n == 1) { /* "stack R0": split at the first blank */
+            char *sp = ops[0];
+            while (*sp && !is_space((unsigned char)*sp)) sp++;
+            if (*sp) {
+                *sp++ = '\0';
+                while (is_space((unsigned char)*sp)) sp++;
+                ops[1] = sp;
+                n = 2;
+            }
+        }
         if (n != 2) die(s, ".upval takes 'stack <register>' or 'up <index>'");
         in_stack = ieq(ops[0], "stack");
         if (!in_stack && !ieq(ops[0], "up")) die(s, ".upval kind must be 'stack' or 'up'");
@@ -817,6 +827,16 @@ void lvm_assemble_free(const lvm_allocator *a, uint8_t *buf, size_t len)
     if (buf) LVM_MEM(a, buf, len, 0);
 }
 
+/* errors longjmp back here; nothing else lives in this frame */
+static void assemble_all(as *s, const char *src, size_t len)
+{
+    if (setjmp(s->jb) == 0) {
+        parse(s, src, len);
+        resolve(s);
+        build(s);
+    }
+}
+
 lvm_status lvm_assemble(const lvm_allocator *a, const char *src, size_t len,
                         uint8_t **out, size_t *out_len, char *err, size_t err_size)
 {
@@ -836,12 +856,9 @@ lvm_status lvm_assemble(const lvm_allocator *a, const char *src, size_t len,
     s->err = err;
     s->errsz = err_size;
 
-    if (setjmp(s->jb) == 0) {
-        uint8_t *buf;
-        parse(s, src, len);
-        resolve(s);
-        build(s);
-        buf = LVM_MEM(a, NULL, 0, s->nout);
+    assemble_all(s, src, len);
+    if (s->status == LVM_OK) {
+        uint8_t *buf = LVM_MEM(a, NULL, 0, s->nout);
         if (!buf) {
             s->status = LVM_ERR_MEM;
         } else {
