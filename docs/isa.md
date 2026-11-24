@@ -38,6 +38,9 @@ instruction after the jump.
 | SETUP  | A B   | upvalue B of the running closure = R[A] |
 | CLOSE  | A     | close the upvalues of registers R[A..] |
 | CALLC  | A B   | call closure R[A] with args R[A+1..A+B]; result replaces R[A] |
+| TRY    | A sBx | install a handler at pc + sBx; it receives the exception in R[A] |
+| ENDTRY |       | remove the innermost handler of this frame |
+| THROW  | A     | throw R[A] |
 
 ## Semantics
 
@@ -91,6 +94,36 @@ Functions with upvalues are only called through `CALLC`; `CALL` is for
 plain functions. A closure refers to its function in the module, so the
 module must stay loaded while closures exist.
 
+## Exceptions
+
+`TRY A sBx` installs a handler: if something is thrown before the matching
+`ENDTRY`, execution continues at `pc + sBx` in the frame that executed
+`TRY`, with the thrown value in `R[A]`. Frames above it are discarded and
+their open upvalues are closed. Handlers nest; the innermost one wins.
+
+```
+    TRY R0, .catch
+    ...                 ; code that may throw
+    ENDTRY
+    JMP .after
+.catch:
+    ...                 ; R0 holds the exception
+.after:
+```
+
+- `THROW A` throws any value. With no handler left, `lvm_run` stops with
+  `LVM_ERR_UNCAUGHT` and hands the value back through `result`.
+- A function that returns drops the handlers it installed, so `ENDTRY`
+  may be left out on the way out.
+- `ENDTRY` can only remove a handler installed by the running frame;
+  anything else is `LVM_ERR_VERIFY`.
+- These runtime errors can be caught: type errors, division by zero,
+  out-of-bounds access, a wrong argument count for `CALLC`, and failing
+  host functions. The handler receives the message as a string, such as
+  `"division by zero"`. Out of memory, stack overflow and handler-stack
+  overflow cannot be caught and end the run.
+- A function may end with `THROW`.
+
 ## Verifier rules
 
 - every register operand is inside the frame
@@ -103,4 +136,5 @@ module must stay loaded while closures exist.
   creating function
 - `CALL` targets have no upvalues; the entry function has none
 - `CALLC` argument registers lie inside the frame
+- `TRY` targets lie inside the function; a function ends with `RET`, `JMP` or `THROW`
 - unknown opcodes are rejected

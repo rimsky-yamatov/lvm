@@ -42,7 +42,7 @@ worked out from the ones it uses; `.regs N` can ask for more.
 | operand | examples |
 |---------|----------|
 | integer | `42`, `-6`, `0x1F` |
-| float | `1.5`, `-2e3` |
+| float | `1.5`, `-2e3`, `inf`, `-inf`, `nan` |
 | string | `"hi\n"` with `\n \t \r \0 \\ \" \xHH` |
 | `nil`, `true`, `false` | |
 
@@ -77,6 +77,7 @@ HOST Ra, argc, id
 NEWARR Ra [, hint]  NEWMAP Ra [, hint]
 GET Ra, Rb, Rc      SET Ra, Rb, Rc       LEN Ra, Rb
 CLOSURE Ra, function    GETUP Ra, n      SETUP Ra, n      CLOSE Ra
+TRY Ra, .label      ENDTRY               THROW Ra
 ```
 
 `LDNIL Ra, Rb` clears the registers `Ra` to `Rb`.

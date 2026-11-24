@@ -6,6 +6,7 @@ Small register-based bytecode VM.
 - 32-bit fixed-width instructions, 36 opcodes
 - 64-bit NaN-boxed values (nil, bool, int48, float64, string, array, map)
 - closures with open/closed upvalues
+- exceptions (`TRY` / `THROW`), including runtime errors
 - a text assembler (`lvma`)
 - precise mark-and-sweep GC
 - bytecode verifier: bad registers, jumps, constants and calls are
