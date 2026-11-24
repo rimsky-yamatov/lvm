@@ -72,11 +72,11 @@ void lvm_set_host(lvm_vm *vm, unsigned id, lvm_host_fn fn, void *ud)
 #  define LVM_CGOTO 1
 #  define NEXT() do { i = *pc++; goto *dispatch[LVM_OP(i)]; } while (0)
 #  define CASE(x) L_##x:
-#  define LVM_DISPATCH_BEGIN NEXT();
+#  define LVM_DISPATCH_BEGIN resume: NEXT();
 #  define LVM_DISPATCH_END
 #else
 #  define LVM_CGOTO 0
-#  define LVM_DISPATCH_BEGIN for (;;) { i = *pc++; switch (LVM_OP(i)) {
+#  define LVM_DISPATCH_BEGIN for (;;) { resume: i = *pc++; switch (LVM_OP(i)) {
 #  define LVM_DISPATCH_END default: st = LVM_ERR_VERIFY; goto fail; } }
 #  define CASE(x) case x:
 #  define NEXT() break
@@ -156,6 +156,7 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     lvm_value *R = vm->stack;
     lvm_closure *cl = NULL;
     uint32_t base = 0, depth = 0, i = 0, k;
+    lvm_value exc = 0;
     lvm_status st = LVM_OK;
 #if LVM_CGOTO
     static const void *const dispatch[OP_COUNT] = {
@@ -194,10 +195,14 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         [OP_GETUP] = &&L_OP_GETUP,
         [OP_SETUP] = &&L_OP_SETUP,
         [OP_CLOSE] = &&L_OP_CLOSE,
-        [OP_CALLC] = &&L_OP_CALLC
+        [OP_CALLC] = &&L_OP_CALLC,
+        [OP_TRY] = &&L_OP_TRY,
+        [OP_ENDTRY] = &&L_OP_ENDTRY,
+        [OP_THROW] = &&L_OP_THROW
     };
 #endif
 
+    vm->nhandlers = 0;
     if (nargs < 0 || (unsigned)nargs != fn->nparams) return LVM_ERR_ARGS;
     if (fn->nregs > vm->stack_slots) return LVM_ERR_STACK;
     for (k = 0; k < fn->nregs; k++)
@@ -207,6 +212,8 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     CASE(OP_RET) {
         lvm_value v = R[LVM_A(i)];
         if (vm->open) lvm_upvals_close(vm, R);
+        while (vm->nhandlers && vm->handlers[vm->nhandlers - 1].depth >= depth)
+            vm->nhandlers--;
         if (depth == 0) {
             if (result) *result = v;
             vm->cur_fn = NULL;
@@ -443,10 +450,54 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
         for (k = callee->nparams; k < callee->nregs; k++) R[k] = lvm_nil();
         NEXT();
     }
+    CASE(OP_TRY)
+        if (vm->nhandlers >= vm->max_handlers) { st = LVM_ERR_STACK; goto fail; }
+        vm->handlers[vm->nhandlers].depth = depth;
+        vm->handlers[vm->nhandlers].reg = LVM_A(i);
+        vm->handlers[vm->nhandlers].pc = pc + LVM_SBX(i);
+        vm->nhandlers++;
+        NEXT();
+    CASE(OP_ENDTRY)
+        /* only the running frame's own handler may be removed */
+        if (!vm->nhandlers || vm->handlers[vm->nhandlers - 1].depth != depth) {
+            st = LVM_ERR_VERIFY;
+            goto fail;
+        }
+        vm->nhandlers--;
+        NEXT();
+    CASE(OP_THROW)
+        exc = R[LVM_A(i)];
+        goto throw_it;
     LVM_DISPATCH_END
 
 fail:
+    goto leave;
+
+throw_it:
+    if (vm->nhandlers == 0) {
+        if (result) *result = exc;
+        st = LVM_ERR_UNCAUGHT;
+        goto leave;
+    }
+    {
+        const lvm_handler *h = &vm->handlers[--vm->nhandlers];
+        if (h->depth < depth) { /* unwind to the frame that installed the handler */
+            uint32_t low = (h->depth + 1 < depth) ? vm->frames[h->depth + 1].base : base;
+            if (vm->open) lvm_upvals_close(vm, vm->stack + low);
+            fn = vm->frames[h->depth].fn;
+            base = vm->frames[h->depth].base;
+            cl = vm->frames[h->depth].cl;
+            depth = h->depth;
+            R = vm->stack + base;
+        }
+        R[h->reg] = exc;
+        pc = h->pc;
+    }
+    goto resume;
+
+leave:
     if (vm->open) lvm_upvals_close(vm, vm->stack);
+    vm->nhandlers = 0;
     vm->cur_fn = NULL;
     return st;
 }
