@@ -1,8 +1,9 @@
-/* lvmi: load a bytecode file and run its entry function. */
+/* lvmi: run a bytecode file (or assembly source) from its entry function. */
 #include "lvm.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static void print_value(lvm_value v)
 {
@@ -64,7 +65,7 @@ int main(int argc, char **argv)
     lvm_status st;
 
     if (argc != 2) {
-        fprintf(stderr, "usage: %s file.lvmb\n", argv[0]);
+        fprintf(stderr, "usage: %s file.lvmb|file.lvma\n", argv[0]);
         return 1;
     }
     buf = read_file(argv[1], &len);
@@ -72,8 +73,22 @@ int main(int argc, char **argv)
         fprintf(stderr, "lvmi: cannot read %s\n", argv[1]);
         return 2;
     }
-    st = lvm_load(NULL, buf, len, &m);
-    free(buf);
+    if (len < 4 || memcmp(buf, "LVMB", 4) != 0) { /* not bytecode: try assembly */
+        char err[256];
+        uint8_t *bc;
+        size_t bclen;
+        st = lvm_assemble(NULL, (const char *)buf, len, &bc, &bclen, err, sizeof err);
+        free(buf);
+        if (st != LVM_OK) {
+            fprintf(stderr, "%s: %s\n", argv[1], err[0] ? err : lvm_strerror(st));
+            return 3;
+        }
+        st = lvm_load(NULL, bc, bclen, &m);
+        lvm_assemble_free(NULL, bc, bclen);
+    } else {
+        st = lvm_load(NULL, buf, len, &m);
+        free(buf);
+    }
     if (st != LVM_OK) {
         fprintf(stderr, "lvmi: %s: %s\n", argv[1], lvm_strerror(st));
         return 3;
