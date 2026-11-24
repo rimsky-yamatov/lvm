@@ -19,6 +19,7 @@ typedef enum {
     OP_HOST,
     OP_NEWARR, OP_NEWMAP, OP_GET, OP_SET, OP_LEN,
     OP_CLOSURE, OP_GETUP, OP_SETUP, OP_CLOSE, OP_CALLC,
+    OP_TRY, OP_ENDTRY, OP_THROW,
     OP_COUNT
 } lvm_opcode;
 
