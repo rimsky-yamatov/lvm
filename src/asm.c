@@ -250,9 +250,13 @@ static int parse_int(as *s, const char *t, int64_t *out)
 
 static int parse_float(const char *t, double *out)
 {
-    const char *p;
+    const char *p = (t[0] == '+' || t[0] == '-') ? t + 1 : t;
     char *end;
 
+    if (ieq(p, "inf") || ieq(p, "nan")) {
+        *out = strtod(t, &end);
+        return *end == '\0';
+    }
     for (p = t; *p; p++) {
         if (!is_digit((unsigned char)*p) && !strchr("+-.eE", *p)) return 0;
     }
@@ -317,6 +321,10 @@ static konst parse_literal(as *s, const char *t)
         if (!lvm_fits_int(k.i)) die(s, "integer constant '%s' does not fit in 48 bits", t);
     } else if (parse_float(t, &k.d)) {
         k.kind = 3;
+        if (k.d != k.d) { /* one NaN: the VM does not tell them apart */
+            uint64_t canon = UINT64_C(0x7FF8000000000000);
+            memcpy(&k.d, &canon, sizeof canon);
+        }
     } else {
         die(s, "bad constant '%s'", t);
     }
