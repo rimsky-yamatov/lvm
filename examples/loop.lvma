@@ -1,0 +1,12 @@
+; expect: 5050
+; sum of 1..100
+main:
+    LDI R0, 0          ; sum
+    LDI R1, 1          ; i
+    LDI R2, 100
+    LDI R3, 1
+.loop:
+    ADD R0, R0, R1
+    ADD R1, R1, R3
+    JLE R1, R2, .loop
+    RET R0

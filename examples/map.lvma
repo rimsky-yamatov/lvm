@@ -1,0 +1,16 @@
+; expect: 102
+main:
+    NEWMAP R0
+    LDK R1, "a"
+    LDI R2, 1
+    SET R0, R1, R2
+    LDK R1, "b"
+    LDI R2, 2
+    SET R0, R1, R2
+    LDK R1, "a"          ; same key again, found by content
+    GET R3, R0, R1
+    LEN R4, R0
+    LDI R5, 100
+    MUL R3, R3, R5
+    ADD R3, R3, R4
+    RET R3

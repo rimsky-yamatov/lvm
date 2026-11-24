@@ -1,0 +1,20 @@
+; expect: 6765
+; recursive fibonacci: the argument goes in R[A], the result comes back there
+main:
+    LDI R0, 20
+    CALL R0, fib
+    RET R0
+
+fib:
+    .params 1
+    LDI R1, 2
+    JLT R0, R1, .base
+    LDI R4, 1
+    SUB R2, R0, R4
+    CALL R2, fib
+    SUB R3, R0, R1
+    CALL R3, fib
+    ADD R0, R2, R3
+    RET R0
+.base:
+    RET R0
