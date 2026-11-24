@@ -13,7 +13,7 @@ static int verify_func(const lvm_module *m, const lvm_func *f)
 
     /* control must not fall off the end of the function */
     last = LVM_OP(f->code[n - 1]);
-    if (last != OP_RET && last != OP_JMP) return 0;
+    if (last != OP_RET && last != OP_JMP && last != OP_THROW) return 0;
 
     for (pc = 0; pc < n; pc++) {
         uint32_t i = f->code[pc];
@@ -86,6 +86,16 @@ static int verify_func(const lvm_module *m, const lvm_func *f)
             if (!REG(a, nr) || b >= f->nupvals) return 0;
             break;
         case OP_CLOSE:
+            if (!REG(a, nr)) return 0;
+            break;
+        case OP_TRY: {
+            long t = (long)pc + 1 + LVM_SBX(i);
+            if (!REG(a, nr) || t < 0 || t >= (long)n) return 0;
+            break;
+        }
+        case OP_ENDTRY:
+            break;
+        case OP_THROW:
             if (!REG(a, nr)) return 0;
             break;
         case OP_CALLC:
