@@ -233,14 +233,18 @@ static void put_func(sb *b, const lvm_module *m, uint32_t idx, int flags)
 
     for (pc = 0; pc < f->ncode;) {
         uint32_t n, i;
+        size_t start;
         if (is_target[pc]) {
             put_label(b, pc);
             sb_str(b, ":\n");
         }
+        start = b->len;
         sb_str(b, "    ");
         n = put_insn(b, m, f, is_target, pc);
         if (flags & LVM_DIS_ADDR) {
-            sb_fmt(b, "    ; %04lu:", (unsigned long)pc);
+            size_t col = b->len - start;
+            if (col < 32) sb_put(b, "                                ", 32 - col);
+            sb_fmt(b, " ; %04lu:", (unsigned long)pc);
             for (i = 0; i < n; i++) sb_fmt(b, " %08lX", (unsigned long)f->code[pc + i]);
         }
         sb_str(b, "\n");

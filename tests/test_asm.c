@@ -64,6 +64,64 @@ static int expect_error(const char *src, lvm_status want, const char *needle)
     return 1;
 }
 
+/* assemble -> disassemble -> assemble must give the same bytes */
+static int roundtrip(const char *src)
+{
+    char err[256];
+    uint8_t *first, *second;
+    size_t n1, n2, tl;
+    lvm_module m;
+    char *text;
+    int flags, ok = 1;
+
+    if (lvm_assemble(NULL, src, strlen(src), &first, &n1, err, sizeof err) != LVM_OK) {
+        printf("  roundtrip: first assembly failed: %s\n", err);
+        return 0;
+    }
+    if (lvm_load(NULL, first, n1, &m) != LVM_OK) {
+        lvm_assemble_free(NULL, first, n1);
+        return 0;
+    }
+    for (flags = 0; flags <= LVM_DIS_ADDR && ok; flags += LVM_DIS_ADDR) {
+        if (lvm_disassemble(NULL, &m, flags, &text, &tl) != LVM_OK) {
+            ok = 0;
+            break;
+        }
+        if (lvm_assemble(NULL, text, tl, &second, &n2, err, sizeof err) != LVM_OK) {
+            printf("  roundtrip: disassembly does not assemble: %s\n%s\n", err, text);
+            ok = 0;
+        } else {
+            if (n1 != n2 || memcmp(first, second, n1) != 0) {
+                printf("  roundtrip: bytes differ. Disassembly:\n%s\n", text);
+                ok = 0;
+            }
+            lvm_assemble_free(NULL, second, n2);
+        }
+        lvm_disassemble_free(NULL, text, tl);
+    }
+    lvm_module_free(&m);
+    lvm_assemble_free(NULL, first, n1);
+    return ok;
+}
+
+/* the disassembly of a program, as text */
+static char *dis_text(const char *src)
+{
+    char err[256];
+    uint8_t *bc;
+    size_t n, tl;
+    lvm_module m;
+    char *text = NULL;
+
+    if (lvm_assemble(NULL, src, strlen(src), &bc, &n, err, sizeof err) != LVM_OK) return NULL;
+    if (lvm_load(NULL, bc, n, &m) == LVM_OK) {
+        lvm_disassemble(NULL, &m, 0, &text, &tl);
+        lvm_module_free(&m);
+    }
+    lvm_assemble_free(NULL, bc, n);
+    return text;
+}
+
 static char *slurp(const char *path)
 {
     FILE *f = fopen(path, "rb");
@@ -96,6 +154,9 @@ static void test_example(const char *path)
     CHECK(tag != NULL);
     if (tag) {
         int ok = expect_int(src, strtoll(tag + 7, NULL, 10));
+        if (!ok) printf("  in %s\n", path);
+        CHECK(ok);
+        ok = roundtrip(src);
         if (!ok) printf("  in %s\n", path);
         CHECK(ok);
     }
@@ -162,6 +223,76 @@ static void test_errors(void)
     CHECK(expect_error("main:\n  LDI R0, 1\n", LVM_ERR_VERIFY, "verifier"));
 }
 
+/* every instruction form, constants of every kind, jump targets of every shape */
+static const char all_ops[] =
+    "main:\n"
+    "    LDI R0, -5\n"
+    "    LDK R1, 3.0\n"
+    "    LDK R2, -0.0\n"
+    "    LDK R3, 1.5e300\n"
+    "    LDK R4, \"a\\\"b\\\\c\\td\\x01\\xFF\"\n"
+    "    LDK R5, nil\n"
+    "    LDK R6, inf\n"
+    "    LDK R7, true\n"
+    "    LDK R7, 123456789\n"
+    "    LDBOOL R8, false\n"
+    "    LDNIL R9, R11\n"
+    "    MOV R0, R1\n    NEG R0, R1\n    NOT R0, R1\n"
+    "    ADD R0, R1, R2\n    SUB R0, R1, R2\n    MUL R0, R1, R2\n"
+    "    DIV R0, R1, R2\n    MOD R0, R1, R2\n"
+    "    AND R0, R1, R2\n    OR R0, R1, R2\n    XOR R0, R1, R2\n"
+    "    SHL R0, R1, R2\n    SHR R0, R1, R2\n"
+    "    EQ 0, R0, R1\n"
+    ".t: JMP .end\n"
+    "    LT 0, R0, R1\n"
+    "    JMP .end\n"
+    "    JEQ R0, R1, .end\n    JNE R0, R1, .end\n"
+    "    JLT R0, R1, .end\n    JLE R0, R1, .end\n"
+    "    JGT R0, R1, .end\n    JGE R0, R1, .end\n"
+    "    JT R0, .end\n    JF R0, .t\n"
+    "    TRY R10, .end\n    ENDTRY\n"
+    "    NEWARR R0\n    NEWARR R0, 9\n    NEWMAP R0\n    NEWMAP R0, 4\n"
+    "    GET R0, R1, R2\n    SET R0, R1, R2\n    LEN R0, R1\n"
+    "    HOST R0, 2, 3\n"
+    "    CALL R0, helper\n"
+    "    CLOSURE R0, closer\n"
+    "    CALLC R0, 1\n"
+    "    CLOSE R0\n"
+    "    THROW R0\n"
+    ".end:\n"
+    "    RET R0\n"
+    "\n"
+    "helper:\n    .params 1\n    RET R0\n"
+    "\n"
+    "closer:\n    .params 1\n    .upval stack R0\n"
+    "    GETUP R1, 0\n    SETUP R1, 0\n    CLOSURE R1, inner\n    RET R1\n"
+    "\n"
+    "inner:\n    .upval up 0\n    GETUP R0, 0\n    RET R0\n";
+
+static void test_disassembler(void)
+{
+    char *t;
+
+    CHECK(roundtrip(all_ops));
+
+    t = dis_text("main:\n  LDI R0, 20\n  LDI R1, 22\n  ADD R2, R0, R1\n  RET R2\n");
+    CHECK(t && strstr(t, "main:\n") && strstr(t, "    LDI R0, 20\n") &&
+          strstr(t, "    ADD R2, R0, R1\n") && strstr(t, "    RET R2\n"));
+    free(t);
+
+    /* floats keep their type, strings their bytes, jumps get labels */
+    t = dis_text("main:\n  LDK R0, 3.0\n  LDK R1, -0.0\n  LDK R2, \"a\\n\\x01\"\n"
+                 "  JMP .x\n.x:\n  RET R0\n");
+    CHECK(t && strstr(t, "LDK R0, 3.0") && strstr(t, "LDK R1, -0.0") &&
+          strstr(t, "LDK R2, \"a\\n\\x01\"") && strstr(t, "JMP .L4") && strstr(t, ".L4:\n"));
+    free(t);
+
+    /* a compare-and-jump is shown as one line */
+    t = dis_text("main:\n  LDI R0, 1\n  LDI R1, 2\n  JLT R0, R1, .x\n.x:\n  RET R0\n");
+    CHECK(t && strstr(t, "JLT R0, R1, .L4"));
+    free(t);
+}
+
 int main(int argc, char **argv)
 {
     int i;
@@ -169,6 +300,7 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; i++) test_example(argv[i]);
     test_syntax();
     test_errors();
+    test_disassembler();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
