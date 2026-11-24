@@ -148,6 +148,12 @@ static int veq(lvm_value x, lvm_value y)
 /* publish the current frame so the collector can find every live register */
 #define SYNC() do { vm->cur_fn = fn; vm->cur_cl = cl; vm->cur_base = base; vm->depth = depth; } while (0)
 
+static int is_catchable(lvm_status st)
+{
+    return st == LVM_ERR_TYPE || st == LVM_ERR_DIVZERO || st == LVM_ERR_BOUNDS ||
+           st == LVM_ERR_ARGS || st == LVM_ERR_HOST;
+}
+
 lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
                    const lvm_value *args, int nargs, lvm_value *result)
 {
@@ -471,6 +477,13 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     LVM_DISPATCH_END
 
 fail:
+    /* errors a program can reasonably handle are thrown as a message string */
+    if (vm->nhandlers && is_catchable(st)) {
+        const char *msg = lvm_strerror(st);
+        SYNC();
+        exc = lvm_new_string(vm, msg, strlen(msg));
+        if (!lvm_is_nil(exc)) goto throw_it;
+    }
     goto leave;
 
 throw_it:
