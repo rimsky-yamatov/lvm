@@ -12,6 +12,7 @@ lvm_vm *lvm_new(const lvm_allocator *a, uint32_t stack_slots, uint32_t max_frame
     lvm_vm *vm;
     lvm_value *stack;
     lvm_frame *frames;
+    lvm_handler *handlers;
 
     if (!a) a = lvm_default_allocator();
     if (stack_slots == 0 || stack_slots > LVM_MAX_STACK ||
@@ -21,10 +22,12 @@ lvm_vm *lvm_new(const lvm_allocator *a, uint32_t stack_slots, uint32_t max_frame
     vm = LVM_MEM(a, NULL, 0, sizeof *vm);
     stack = LVM_MEM(a, NULL, 0, (size_t)stack_slots * sizeof *stack);
     frames = LVM_MEM(a, NULL, 0, (size_t)max_frames * sizeof *frames);
-    if (!vm || !stack || !frames) {
+    handlers = LVM_MEM(a, NULL, 0, (size_t)max_frames * 2 * sizeof *handlers);
+    if (!vm || !stack || !frames || !handlers) {
         if (vm) LVM_MEM(a, vm, sizeof *vm, 0);
         if (stack) LVM_MEM(a, stack, (size_t)stack_slots * sizeof *stack, 0);
         if (frames) LVM_MEM(a, frames, (size_t)max_frames * sizeof *frames, 0);
+        if (handlers) LVM_MEM(a, handlers, (size_t)max_frames * 2 * sizeof *handlers, 0);
         return NULL;
     }
 
@@ -34,6 +37,8 @@ lvm_vm *lvm_new(const lvm_allocator *a, uint32_t stack_slots, uint32_t max_frame
     vm->stack_slots = stack_slots;
     vm->frames = frames;
     vm->max_frames = max_frames;
+    vm->handlers = handlers;
+    vm->max_handlers = max_frames * 2;
     vm->threshold = vm->gc_min = LVM_GC_MIN;
     return vm;
 }
@@ -48,6 +53,7 @@ void lvm_free(lvm_vm *vm)
     lvm_gc_free(vm);
     LVM_MEM(&a, vm->stack, (size_t)vm->stack_slots * sizeof *vm->stack, 0);
     LVM_MEM(&a, vm->frames, (size_t)vm->max_frames * sizeof *vm->frames, 0);
+    LVM_MEM(&a, vm->handlers, (size_t)vm->max_handlers * sizeof *vm->handlers, 0);
     LVM_MEM(&a, vm, sizeof *vm, 0);
 }
 

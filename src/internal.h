@@ -7,6 +7,12 @@
 
 #define LVM_MEM(a, p, old, nw) ((a)->alloc((a)->ud, (p), (old), (nw)))
 
+typedef struct {
+    uint32_t depth;         /* frame level that installed the handler */
+    uint32_t reg;           /* register that receives the exception */
+    const uint32_t *pc;     /* where the handler starts */
+} lvm_handler;
+
 typedef struct lvm_closure lvm_closure;
 typedef struct lvm_upval lvm_upval;
 
@@ -104,6 +110,8 @@ struct lvm_vm {
     uint32_t stack_slots;
     lvm_frame *frames;
     uint32_t max_frames;
+    lvm_handler *handlers;  /* active TRY blocks, innermost last */
+    uint32_t nhandlers, max_handlers;
     lvm_host_slot host[LVM_HOST_MAX];
 
     /* heap and collector */
