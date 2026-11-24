@@ -6,6 +6,7 @@ Small register-based bytecode VM.
 - 32-bit fixed-width instructions, 36 opcodes
 - 64-bit NaN-boxed values (nil, bool, int48, float64, string, array, map)
 - closures with open/closed upvalues
+- a text assembler (`lvma`)
 - precise mark-and-sweep GC
 - bytecode verifier: bad registers, jumps, constants and calls are
   rejected at load time, so untrusted bytecode can be run
@@ -50,7 +51,23 @@ lvm_module_free(&m);
 
 `lvmi file.lvmb` runs a bytecode file; host function 0 prints its arguments.
 
+Assembly source looks like this:
+
+```
+main:
+    LDI R0, 20
+    LDI R1, 22
+    ADD R2, R0, R1
+    RET R2
+```
+
+```
+lvma prog.lvma -o prog.lvmb
+lvmi prog.lvmb          # or: lvmi prog.lvma
+```
+
 ## Docs
 
 - `docs/format.md` - file format
 - `docs/isa.md` - instructions and verifier rules
+- `docs/asm.md` - assembly language
