@@ -24,7 +24,8 @@ typedef enum {
     LVM_ERR_DIVZERO,
     LVM_ERR_HOST,
     LVM_ERR_BOUNDS,
-    LVM_ERR_ASM
+    LVM_ERR_ASM,
+    LVM_ERR_UNCAUGHT
 } lvm_status;
 
 /* realloc-like allocator; new_size == 0 frees */
@@ -81,7 +82,9 @@ lvm_vm *lvm_new(const lvm_allocator *a, uint32_t stack_slots, uint32_t max_frame
 void lvm_free(lvm_vm *vm);
 void lvm_set_host(lvm_vm *vm, unsigned id, lvm_host_fn fn, void *ud);
 
-/* run the module's entry function */
+/* Run the module's entry function. If the program throws and nothing
+ * catches it, the status is LVM_ERR_UNCAUGHT and *result is the thrown
+ * value (valid until the next allocation or lvm_run on this vm). */
 lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
                    const lvm_value *args, int nargs, lvm_value *result);
 
