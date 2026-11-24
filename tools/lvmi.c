@@ -5,18 +5,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void print_value(lvm_value v)
+static void print_value(FILE *f, lvm_value v)
 {
-    if (lvm_is_float(v))     printf("%.17g", lvm_as_float(v));
-    else if (lvm_is_int(v))  printf("%lld", (long long)lvm_as_int(v));
-    else if (lvm_is_bool(v)) fputs(lvm_as_bool(v) ? "true" : "false", stdout);
-    else if (lvm_is_string(v)) {
+    if (lvm_is_float(v)) {
+        fprintf(f, "%.17g", lvm_as_float(v));
+    } else if (lvm_is_int(v)) {
+        fprintf(f, "%lld", (long long)lvm_as_int(v));
+    } else if (lvm_is_bool(v)) {
+        fputs(lvm_as_bool(v) ? "true" : "false", f);
+    } else if (lvm_is_string(v)) {
         size_t n;
         const char *d = lvm_string_data(v, &n);
-        fwrite(d, 1, n, stdout);
+        fwrite(d, 1, n, f);
+    } else if (lvm_is_nil(v)) {
+        fputs("nil", f);
+    } else {
+        fprintf(f, "<%s>", lvm_type_name(v));
     }
-    else if (!lvm_is_nil(v)) printf("<%s>", lvm_type_name(v));
-    else                     fputs("nil", stdout);
 }
 
 /* host function 0: print arguments separated by spaces */
@@ -26,7 +31,7 @@ static lvm_status host_print(void *ud, lvm_value *args, int argc)
     (void)ud;
     for (k = 0; k < argc; k++) {
         if (k) putchar(' ');
-        print_value(args[k]);
+        print_value(stdout, args[k]);
     }
     putchar('\n');
     args[0] = lvm_nil();
@@ -102,8 +107,12 @@ int main(int argc, char **argv)
     lvm_set_host(vm, 0, host_print, NULL);
     st = lvm_run(vm, &m, NULL, 0, &result);
     if (st == LVM_OK) {
-        print_value(result);
+        print_value(stdout, result);
         putchar('\n');
+    } else if (st == LVM_ERR_UNCAUGHT) {
+        fputs("lvmi: uncaught exception: ", stderr);
+        print_value(stderr, result);
+        fputc('\n', stderr);
     } else {
         fprintf(stderr, "lvmi: runtime error: %s\n", lvm_strerror(st));
     }
