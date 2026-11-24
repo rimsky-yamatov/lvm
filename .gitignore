@@ -6,3 +6,4 @@
 /lvma
 /tests/test_asm
 *.lvmb
+/lvmdis
