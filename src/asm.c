@@ -460,7 +460,9 @@ static const insn_def insns[] = {
     { "LEN", OP_LEN, "rr" },
     { "CLOSURE", OP_CLOSURE, "rF" },
     { "GETUP", OP_GETUP, "ri" },   { "SETUP", OP_SETUP, "ri" },
-    { "CLOSE", OP_CLOSE, "r" },    { "CALLC", OP_CALLC, "ri" }
+    { "CLOSE", OP_CLOSE, "r" },    { "CALLC", OP_CALLC, "ri" },
+    { "TRY", OP_TRY, "rL" },       { "ENDTRY", OP_ENDTRY, "" },
+    { "THROW", OP_THROW, "r" }
 };
 
 /* compare-and-jump: a comparison followed by the JMP it guards */
