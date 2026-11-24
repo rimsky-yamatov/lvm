@@ -3,3 +3,5 @@
 /lvmi
 /tests/test_vm
 /build/
+/lvma
+/tests/test_asm
