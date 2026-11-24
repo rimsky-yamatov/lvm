@@ -1,0 +1,13 @@
+; expect: 16
+; A division by zero inside TRY is thrown as a message string. The handler
+; gets it in R0 (the register named by TRY): "division by zero" has 16 bytes.
+main:
+    TRY R0, .catch
+    LDI R1, 1
+    LDI R2, 0
+    DIV R3, R1, R2
+    ENDTRY
+    RET R3
+.catch:
+    LEN R4, R0
+    RET R4

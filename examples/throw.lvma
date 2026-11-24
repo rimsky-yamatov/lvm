@@ -1,0 +1,13 @@
+; expect: 7
+; THROW unwinds out of risky() into the handler of the function that called it.
+main:
+    TRY R0, .catch
+    CALL R1, risky
+    ENDTRY
+    RET R1
+.catch:
+    RET R0
+
+risky:
+    LDI R0, 7
+    THROW R0
