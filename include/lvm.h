@@ -118,6 +118,20 @@ lvm_status lvm_assemble(const lvm_allocator *a, const char *src, size_t len,
                         uint8_t **out, size_t *out_len, char *err, size_t err_size);
 void lvm_assemble_free(const lvm_allocator *a, uint8_t *buf, size_t len);
 
+/* ---- disassembler ----
+ *
+ * Prints a loaded module as assembly text. The text is accepted by
+ * lvm_assemble again; for a module that came out of the assembler it
+ * produces the same bytecode. Functions are called "main" (the entry) and
+ * "f<index>", local labels ".L<pc>". The text is NUL-terminated and *len
+ * does not count the terminator. Release it with lvm_disassemble_free.
+ */
+#define LVM_DIS_ADDR 1 /* append "; pc: word" to every instruction */
+
+lvm_status lvm_disassemble(const lvm_allocator *a, const lvm_module *m, int flags,
+                           char **out, size_t *len);
+void lvm_disassemble_free(const lvm_allocator *a, char *text, size_t len);
+
 #ifdef __cplusplus
 }
 #endif
