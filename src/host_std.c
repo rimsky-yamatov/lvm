@@ -515,8 +515,11 @@ static lvm_status host_scan(void *ud, lvm_value *args, int argc)
         case '%':
             skip_ws(s, &eof);
             c = eof ? -1 : in_get(s);
-            ok = c == '%';
-            if (!ok && c != -1) in_unget(s, c);
+            if (c != '%') { /* the literal did not match */
+                if (c == -1) eof = 1;
+                else in_unget(s, c);
+                goto done;
+            }
             continue;
         case 'd': case 'i': case 'u':
             ok = scan_number(s, 10, 0, &v, &eof);
@@ -563,6 +566,7 @@ static lvm_status host_scan(void *ud, lvm_value *args, int argc)
         }
         n++;
     }
+done:
     free(fmt);
     if (n == 0 && eof) args[0] = lvm_nil();
     return LVM_OK;
