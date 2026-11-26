@@ -377,3 +377,239 @@ static lvm_status host_printf(void *ud, lvm_value *args, int argc)
     }
     return finish_text(st, &b, args);
 }
+
+/* ---- input: scan, readline, getchar, putchar ---- */
+
+static int is_ws(int c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+static int is_dig(int c)
+{
+    return c >= '0' && c <= '9';
+}
+
+static void skip_ws(lvm_std *s, int *eof)
+{
+    int c;
+
+    while ((c = in_get(s)) != -1 && is_ws(c)) {}
+    if (c == -1) *eof = 1;
+    else in_unget(s, c);
+}
+
+/* an integer in the VM's range stays an int, anything larger becomes a float */
+static lvm_value int_or_float(long long v)
+{
+    return lvm_fits_int((int64_t)v) ? lvm_int((int64_t)v) : lvm_float((double)v);
+}
+
+/* reads the next value for a conversion; returns 0 when the input does not match */
+static int scan_number(lvm_std *s, int base, int is_float, lvm_value *out, int *eof)
+{
+    char buf[80];
+    size_t n = 0;
+    int c;
+
+    skip_ws(s, eof);
+    if (*eof) return 0;
+
+    c = in_get(s);
+    if (c == '+' || c == '-') {
+        buf[n++] = (char)c;
+        c = in_get(s);
+    }
+    if (is_float) {
+        int digits = 0;
+        while (is_dig(c) && n < sizeof buf - 2) { buf[n++] = (char)c; c = in_get(s); digits = 1; }
+        if (c == '.') {
+            buf[n++] = '.';
+            c = in_get(s);
+            while (is_dig(c) && n < sizeof buf - 2) { buf[n++] = (char)c; c = in_get(s); digits = 1; }
+        }
+        if (!digits) {
+            if (c == -1) *eof = 1;
+            else in_unget(s, c);
+            return 0;
+        }
+        if (c == 'e' || c == 'E') {
+            buf[n++] = 'e';
+            c = in_get(s);
+            if (c == '+' || c == '-') { buf[n++] = (char)c; c = in_get(s); }
+            while (is_dig(c) && n < sizeof buf - 1) { buf[n++] = (char)c; c = in_get(s); }
+        }
+        if (c == -1) *eof = 1;
+        else in_unget(s, c);
+        buf[n] = '\0';
+        *out = lvm_float(strtod(buf, NULL));
+        return 1;
+    } else {
+        int digits = 0;
+        for (;;) {
+            int ok = base == 16 ? (is_dig(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) : is_dig(c);
+            if (!ok || n >= sizeof buf - 1) break;
+            buf[n++] = (char)c;
+            c = in_get(s);
+            digits = 1;
+        }
+        if (c == -1) *eof = 1;
+        else in_unget(s, c);
+        if (!digits) return 0;
+        buf[n] = '\0';
+        *out = int_or_float(strtoll(buf, NULL, base));
+        return 1;
+    }
+}
+
+/*
+ * scan(fmt): the engine behind scanf. Understands %d %i %u %x %f %e %g %s %c
+ * and %%; white space in the format skips white space in the input. Returns
+ * the array of converted values, or nil if the input ended before the first.
+ */
+static lvm_status host_scan(void *ud, lvm_value *args, int argc)
+{
+    lvm_std *s = ud;
+    const char *f;
+    char *fmt;
+    size_t fl, i;
+    lvm_value arr;
+    uint32_t n = 0;
+    int eof = 0;
+
+    f = argc == 1 ? lvm_string_data(args[0], &fl) : NULL;
+    if (!f) return LVM_ERR_TYPE;
+    fmt = malloc(fl + 1); /* the format is overwritten by the result below */
+    if (!fmt) return LVM_ERR_MEM;
+    memcpy(fmt, f, fl);
+
+    arr = lvm_obj_array_new(s->vm, 4);
+    if (lvm_is_nil(arr)) {
+        free(fmt);
+        return LVM_ERR_MEM;
+    }
+    args[0] = arr;
+
+    for (i = 0; i < fl; i++) {
+        lvm_value v = lvm_nil();
+        int c, ok = 1;
+
+        if (is_ws((unsigned char)fmt[i])) {
+            skip_ws(s, &eof);
+            continue;
+        }
+        if (fmt[i] != '%') { /* a literal must match */
+            c = in_get(s);
+            if (c != (unsigned char)fmt[i]) {
+                if (c == -1) eof = 1;
+                else in_unget(s, c);
+                break;
+            }
+            continue;
+        }
+        i++;
+        while (i < fl && strchr("hlLzjt", fmt[i])) i++;
+        if (i >= fl) break;
+
+        switch (fmt[i]) {
+        case '%':
+            skip_ws(s, &eof);
+            c = eof ? -1 : in_get(s);
+            ok = c == '%';
+            if (!ok && c != -1) in_unget(s, c);
+            continue;
+        case 'd': case 'i': case 'u':
+            ok = scan_number(s, 10, 0, &v, &eof);
+            break;
+        case 'x': case 'X':
+            ok = scan_number(s, 16, 0, &v, &eof);
+            break;
+        case 'f': case 'F': case 'e': case 'E': case 'g': case 'G':
+            ok = scan_number(s, 10, 1, &v, &eof);
+            break;
+        case 's': {
+            tb b = { NULL, 0, 0, 0 };
+            skip_ws(s, &eof);
+            if (!eof) {
+                while ((c = in_get(s)) != -1 && !is_ws(c)) {
+                    char ch = (char)c;
+                    tb_put(&b, &ch, 1);
+                }
+                if (c == -1) eof = 1;
+                else in_unget(s, c);
+            }
+            ok = b.n > 0;
+            if (ok) {
+                v = lvm_new_string(s->vm, b.p, b.n);
+                if (lvm_is_nil(v)) ok = 0, eof = 0;
+            }
+            tb_free(&b);
+            break;
+        }
+        case 'c':
+            c = in_get(s);
+            ok = c != -1;
+            if (ok) v = lvm_int(c);
+            else eof = 1;
+            break;
+        default:
+            ok = 0;
+            break;
+        }
+        if (!ok) break;
+        if (lvm_obj_set(s->vm, arr, lvm_int((int64_t)n), v) != LVM_OK) {
+            free(fmt);
+            return LVM_ERR_MEM;
+        }
+        n++;
+    }
+    free(fmt);
+    if (n == 0 && eof) args[0] = lvm_nil();
+    return LVM_OK;
+}
+
+static lvm_status host_readline(void *ud, lvm_value *args, int argc)
+{
+    lvm_std *s = ud;
+    tb b = { NULL, 0, 0, 0 };
+    int c, any = 0;
+    lvm_value v;
+
+    (void)argc;
+    while ((c = in_get(s)) != -1) {
+        char ch = (char)c;
+        any = 1;
+        if (c == '\n') break;
+        tb_put(&b, &ch, 1);
+    }
+    if (!any) {
+        tb_free(&b);
+        args[0] = lvm_nil(); /* end of input */
+        return LVM_OK;
+    }
+    if (b.n && b.p[b.n - 1] == '\r') b.n--;
+    v = b.bad ? lvm_nil() : lvm_new_string(s->vm, b.p ? b.p : "", b.n);
+    tb_free(&b);
+    if (lvm_is_nil(v)) return LVM_ERR_MEM;
+    args[0] = v;
+    return LVM_OK;
+}
+
+static lvm_status host_getchar(void *ud, lvm_value *args, int argc)
+{
+    (void)argc;
+    args[0] = lvm_int(in_get((lvm_std *)ud));
+    return LVM_OK;
+}
+
+static lvm_status host_putchar(void *ud, lvm_value *args, int argc)
+{
+    long long v;
+    char ch;
+
+    if (argc != 1 || !arg_ll(args[0], &v)) return LVM_ERR_TYPE;
+    ch = (char)v;
+    out_bytes((lvm_std *)ud, &ch, 1);
+    args[0] = lvm_int((unsigned char)ch);
+    return LVM_OK;
+}
