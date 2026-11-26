@@ -197,6 +197,19 @@ static void test_syntax(void)
                      "  LDNIL R3, R4\n  GET R5, R0, R1\n  RET R5\n", 5));
 }
 
+static void test_string_concat(void)
+{
+    CHECK(expect_int("main:\n  LDK R0, \"foo\"\n  LDK R1, \"bar\"\n  ADD R2, R0, R1\n  LEN R3, R2\n  RET R3\n", 6));
+    CHECK(expect_int("main:\n  LDK R0, \"ab\"\n  LDK R1, \"\"\n  ADD R2, R0, R1\n  LEN R3, R2\n  RET R3\n", 2));
+
+    /* 2000 rounds of growing a string: far more garbage than the collector's threshold */
+    CHECK(expect_int("main:\n  LDK R0, \"\"\n  LDK R1, \"ab\"\n  LDI R2, 0\n  LDI R3, 2000\n  LDI R4, 1\n"
+                     ".loop:\n  ADD R0, R0, R1\n  ADD R2, R2, R4\n  JLT R2, R3, .loop\n  LEN R5, R0\n  RET R5\n", 4000));
+
+    /* a string and a number do not concatenate */
+    CHECK(expect_error("main:\n  LDK R0, \"a\"\n  LDI R1, 1\n  ADD R2, R0, R1\n  RET R2\n", LVM_ERR_TYPE, ""));
+}
+
 static void test_errors(void)
 {
     CHECK(expect_error("main:\n  FOO R0\n", LVM_ERR_ASM, "line 2: unknown instruction 'FOO'"));
@@ -301,6 +314,7 @@ int main(int argc, char **argv)
     test_syntax();
     test_errors();
     test_disassembler();
+    test_string_concat();
 
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
