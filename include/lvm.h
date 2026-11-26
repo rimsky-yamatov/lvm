@@ -25,7 +25,8 @@ typedef enum {
     LVM_ERR_HOST,
     LVM_ERR_BOUNDS,
     LVM_ERR_ASM,
-    LVM_ERR_UNCAUGHT
+    LVM_ERR_UNCAUGHT,
+    LVM_ERR_COMPILE
 } lvm_status;
 
 /* realloc-like allocator; new_size == 0 frees */
@@ -117,6 +118,17 @@ void lvm_set_gc_threshold(lvm_vm *vm, size_t min_bytes);
 lvm_status lvm_assemble(const lvm_allocator *a, const char *src, size_t len,
                         uint8_t **out, size_t *out_len, char *err, size_t err_size);
 void lvm_assemble_free(const lvm_allocator *a, uint8_t *buf, size_t len);
+
+/* ---- compiler ----
+ *
+ * Compiles lvc source (see docs/lvc.md) to assembly text, which
+ * lvm_assemble turns into bytecode. On failure the status is
+ * LVM_ERR_COMPILE and err holds a message such as "line 4: undefined
+ * variable 'x'". Release the text with lvm_compile_free.
+ */
+lvm_status lvm_compile(const lvm_allocator *a, const char *src, size_t len,
+                       char **out, size_t *out_len, char *err, size_t err_size);
+void lvm_compile_free(const lvm_allocator *a, char *text, size_t len);
 
 /* ---- disassembler ----
  *

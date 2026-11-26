@@ -34,7 +34,8 @@ const char *lvm_strerror(lvm_status st)
         "host function error",
         "index out of bounds",
         "assembly error",
-        "uncaught exception"
+        "uncaught exception",
+        "compile error"
     };
     return (unsigned)st < sizeof msg / sizeof msg[0] ? msg[st] : "unknown error";
 }
