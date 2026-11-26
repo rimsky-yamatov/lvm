@@ -171,6 +171,25 @@ int lvm_obj_equal(lvm_value a, lvm_value b)
            memcmp(x->data, y->data, x->len) == 0;
 }
 
+/* a + b for two strings; both must stay reachable (they sit in registers) */
+lvm_value lvm_obj_concat(lvm_vm *vm, lvm_value a, lvm_value b)
+{
+    const lvm_string *x = (const lvm_string *)lvm_to_obj(a);
+    const lvm_string *y = (const lvm_string *)lvm_to_obj(b);
+    size_t n = (size_t)x->len + y->len;
+    lvm_string *s;
+
+    if (n > 0x7FFFFFFFu) return lvm_nil();
+    s = (lvm_string *)lvm_obj_new(vm, LVM_OBJ_STRING, LVM_STRING_SIZE(n));
+    if (!s) return lvm_nil();
+    s->len = (uint32_t)n;
+    if (x->len) memcpy(s->data, x->data, x->len);
+    if (y->len) memcpy(s->data + x->len, y->data, y->len);
+    s->data[n] = '\0';
+    s->hash = fnv1a(s->data, n);
+    return lvm_from_obj(&s->o);
+}
+
 const char *lvm_type_name(lvm_value v)
 {
     if (lvm_is_float(v)) return "float";

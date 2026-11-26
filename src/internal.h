@@ -136,6 +136,7 @@ void lvm_obj_free(lvm_vm *vm, lvm_obj *o);
 void lvm_obj_free_all(lvm_vm *vm);
 size_t lvm_obj_bytes(const lvm_obj *o);
 int lvm_obj_equal(lvm_value a, lvm_value b);
+lvm_value lvm_obj_concat(lvm_vm *vm, lvm_value a, lvm_value b);   /* nil on failure */
 lvm_string *lvm_string_perm(const lvm_allocator *a, const char *s, size_t len);
 void lvm_string_free_perm(const lvm_allocator *a, lvm_string *s);
 

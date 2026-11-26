@@ -249,9 +249,19 @@ lvm_status lvm_run(lvm_vm *vm, const lvm_module *m,
     CASE(OP_LDBOOL)
         R[LVM_A(i)] = lvm_bool((int)LVM_B(i));
         NEXT();
-    CASE(OP_ADD)
-        ARITH((void)0, a_ + b_, a_ + b_);
+    CASE(OP_ADD) {
+        lvm_value x = R[LVM_B(i)], y = R[LVM_C(i)];
+        if (lvm_is_string(x) && lvm_is_string(y)) { /* string concatenation */
+            lvm_value v;
+            SYNC();
+            v = lvm_obj_concat(vm, x, y);
+            if (lvm_is_nil(v)) { st = LVM_ERR_MEM; goto fail; }
+            R[LVM_A(i)] = v;
+        } else {
+            ARITH((void)0, a_ + b_, a_ + b_);
+        }
         NEXT();
+    }
     CASE(OP_SUB)
         ARITH((void)0, a_ - b_, a_ - b_);
         NEXT();

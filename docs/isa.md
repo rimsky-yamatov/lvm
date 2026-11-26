@@ -17,7 +17,7 @@ instruction after the jump.
 | LDI    | A sBx | R[A] = int(sBx) |
 | LDNIL  | A B   | R[A..A+B] = nil |
 | LDBOOL | A B   | R[A] = (B != 0) |
-| ADD SUB MUL DIV MOD | A B C | R[A] = R[B] op R[C] |
+| ADD SUB MUL DIV MOD | A B C | R[A] = R[B] op R[C]; `ADD` of two strings concatenates them |
 | NEG    | A B   | R[A] = -R[B] |
 | AND OR XOR SHL SHR | A B C | integer bit ops, shift count masked to 6 bits |
 | NOT    | A B   | R[A] = ~R[B] |
