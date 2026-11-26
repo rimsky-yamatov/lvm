@@ -23,7 +23,8 @@ add_library(lvm STATIC
   src/container.c
   src/closure.c
   src/asm.c
-  src/disasm.c)
+  src/disasm.c
+  src/host_std.c)
 target_include_directories(lvm PUBLIC include PRIVATE src)
 if(LVM_NO_COMPUTED_GOTO)
   target_compile_definitions(lvm PRIVATE LVM_NO_COMPUTED_GOTO)

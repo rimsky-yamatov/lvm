@@ -617,3 +617,496 @@ static lvm_status host_putchar(void *ud, lvm_value *args, int argc)
     args[0] = lvm_int((unsigned char)ch);
     return LVM_OK;
 }
+
+/* ---- conversions ---- */
+
+static int fits_double_int(double d)
+{
+    return d >= -140737488355328.0 && d < 140737488355328.0;
+}
+
+/* int(x): truncates floats, parses the leading number of a string */
+static lvm_status host_int(void *ud, lvm_value *args, int argc)
+{
+    lvm_value v;
+
+    (void)ud;
+    if (argc != 1) return LVM_ERR_ARGS;
+    v = args[0];
+    if (lvm_is_int(v)) return LVM_OK;
+    if (lvm_is_bool(v)) {
+        args[0] = lvm_int(lvm_as_bool(v));
+    } else if (lvm_is_float(v)) {
+        double d = lvm_as_float(v);
+        if (d != d || !fits_double_int(d)) return LVM_ERR_TYPE;
+        args[0] = lvm_int((int64_t)d);
+    } else if (lvm_is_string(v)) {
+        args[0] = int_or_float(strtoll(lvm_string_data(v, NULL), NULL, 10));
+    } else {
+        return LVM_ERR_TYPE;
+    }
+    return LVM_OK;
+}
+
+static lvm_status host_float(void *ud, lvm_value *args, int argc)
+{
+    lvm_value v;
+
+    (void)ud;
+    if (argc != 1) return LVM_ERR_ARGS;
+    v = args[0];
+    if (lvm_is_float(v)) return LVM_OK;
+    if (lvm_is_int(v)) args[0] = lvm_float((double)lvm_as_int(v));
+    else if (lvm_is_bool(v)) args[0] = lvm_float(lvm_as_bool(v));
+    else if (lvm_is_string(v)) args[0] = lvm_float(strtod(lvm_string_data(v, NULL), NULL));
+    else return LVM_ERR_TYPE;
+    return LVM_OK;
+}
+
+static lvm_status host_str(void *ud, lvm_value *args, int argc)
+{
+    lvm_std *s = ud;
+    tb b = { NULL, 0, 0, 0 };
+    lvm_value v;
+
+    if (argc != 1) return LVM_ERR_ARGS;
+    if (lvm_is_string(args[0])) return LVM_OK;
+    fmt_value(&b, args[0], 0, 0);
+    v = b.bad ? lvm_nil() : lvm_new_string(s->vm, b.p ? b.p : "", b.n);
+    tb_free(&b);
+    if (lvm_is_nil(v)) return LVM_ERR_MEM;
+    args[0] = v;
+    return LVM_OK;
+}
+
+/* ---- strings ---- */
+
+static lvm_status host_substr(void *ud, lvm_value *args, int argc)
+{
+    size_t len;
+    const char *d;
+    long long start, n;
+    lvm_value v;
+
+    if (argc < 2 || argc > 3) return LVM_ERR_ARGS;
+    d = lvm_string_data(args[0], &len);
+    if (!d || !arg_ll(args[1], &start)) return LVM_ERR_TYPE;
+    if (start < 0) start = 0;
+    if (start > (long long)len) start = (long long)len;
+    n = (long long)len - start;
+    if (argc == 3) {
+        long long want;
+        if (!arg_ll(args[2], &want)) return LVM_ERR_TYPE;
+        if (want < 0) want = 0;
+        if (want < n) n = want;
+    }
+    v = lvm_new_string(((lvm_std *)ud)->vm, d + start, (size_t)n);
+    if (lvm_is_nil(v)) return LVM_ERR_MEM;
+    args[0] = v;
+    return LVM_OK;
+}
+
+static lvm_status host_strcmp(void *ud, lvm_value *args, int argc)
+{
+    size_t la, lb, n;
+    const char *a, *b;
+    int r;
+
+    (void)ud;
+    if (argc != 2) return LVM_ERR_ARGS;
+    a = lvm_string_data(args[0], &la);
+    b = lvm_string_data(args[1], &lb);
+    if (!a || !b) return LVM_ERR_TYPE;
+    n = la < lb ? la : lb;
+    r = memcmp(a, b, n);
+    if (r == 0) r = la < lb ? -1 : (la > lb ? 1 : 0);
+    args[0] = lvm_int(r < 0 ? -1 : (r > 0 ? 1 : 0));
+    return LVM_OK;
+}
+
+static lvm_status host_chr(void *ud, lvm_value *args, int argc)
+{
+    long long v;
+    char ch;
+    lvm_value s;
+
+    if (argc != 1 || !arg_ll(args[0], &v)) return LVM_ERR_TYPE;
+    if (v < 0 || v > 255) return LVM_ERR_BOUNDS;
+    ch = (char)v;
+    s = lvm_new_string(((lvm_std *)ud)->vm, &ch, 1);
+    if (lvm_is_nil(s)) return LVM_ERR_MEM;
+    args[0] = s;
+    return LVM_OK;
+}
+
+static long find_bytes(const char *h, size_t hl, const char *n, size_t nl, size_t from)
+{
+    size_t i;
+
+    if (nl > hl) return -1;
+    for (i = from; i + nl <= hl; i++) {
+        if (nl == 0 || memcmp(h + i, n, nl) == 0) return (long)i;
+    }
+    return -1;
+}
+
+static lvm_status host_find(void *ud, lvm_value *args, int argc)
+{
+    size_t hl, nl;
+    const char *h, *n;
+    long long from = 0;
+
+    (void)ud;
+    if (argc < 2 || argc > 3) return LVM_ERR_ARGS;
+    h = lvm_string_data(args[0], &hl);
+    n = lvm_string_data(args[1], &nl);
+    if (!h || !n) return LVM_ERR_TYPE;
+    if (argc == 3 && !arg_ll(args[2], &from)) return LVM_ERR_TYPE;
+    if (from < 0) from = 0;
+    if (from > (long long)hl) {
+        args[0] = lvm_int(-1);
+        return LVM_OK;
+    }
+    args[0] = lvm_int(find_bytes(h, hl, n, nl, (size_t)from));
+    return LVM_OK;
+}
+
+/* split(s, sep): the pieces between occurrences of sep, as an array */
+static lvm_status host_split(void *ud, lvm_value *args, int argc)
+{
+    lvm_vm *vm = ((lvm_std *)ud)->vm;
+    const char *s, *sep;
+    char *sepcopy;
+    size_t sl, pl, start = 0;
+    lvm_value arr;
+    uint32_t n = 0;
+    lvm_status st = LVM_OK;
+
+    if (argc != 2) return LVM_ERR_ARGS;
+    s = lvm_string_data(args[0], &sl);
+    sep = lvm_string_data(args[1], &pl);
+    if (!s || !sep) return LVM_ERR_TYPE;
+    if (pl == 0) return LVM_ERR_BOUNDS;
+    sepcopy = malloc(pl);
+    if (!sepcopy) return LVM_ERR_MEM;
+    memcpy(sepcopy, sep, pl);
+
+    arr = lvm_obj_array_new(vm, 8);
+    if (lvm_is_nil(arr)) {
+        free(sepcopy);
+        return LVM_ERR_MEM;
+    }
+    args[1] = arr; /* keeps the array reachable; args[0] still holds the string */
+
+    for (;;) {
+        long at = find_bytes(s, sl, sepcopy, pl, start);
+        size_t end = at < 0 ? sl : (size_t)at;
+        lvm_value piece = lvm_new_string(vm, s + start, end - start);
+        if (lvm_is_nil(piece) || lvm_obj_set(vm, arr, lvm_int((int64_t)n), piece) != LVM_OK) {
+            st = LVM_ERR_MEM;
+            break;
+        }
+        n++;
+        if (at < 0) break;
+        start = end + pl;
+    }
+    free(sepcopy);
+    if (st == LVM_OK) args[0] = arr;
+    return st;
+}
+
+/* ---- containers ---- */
+
+static lvm_status host_array(void *ud, lvm_value *args, int argc)
+{
+    lvm_vm *vm = ((lvm_std *)ud)->vm;
+    long long n, i;
+    lvm_value fill = lvm_nil(), arr;
+
+    if (argc < 1 || argc > 2) return LVM_ERR_ARGS;
+    if (!lvm_is_int(args[0])) return LVM_ERR_TYPE;
+    n = lvm_as_int(args[0]);
+    if (n < 0 || n > (1 << 24)) return LVM_ERR_BOUNDS;
+    if (argc == 2) fill = args[1];
+    arr = lvm_obj_array_new(vm, (uint32_t)n);
+    if (lvm_is_nil(arr)) return LVM_ERR_MEM;
+    for (i = 0; i < n; i++) { /* no collection can run here */
+        if (lvm_obj_set(vm, arr, lvm_int(i), fill) != LVM_OK) return LVM_ERR_MEM;
+    }
+    args[0] = arr;
+    return LVM_OK;
+}
+
+static lvm_status host_map(void *ud, lvm_value *args, int argc)
+{
+    lvm_value m;
+
+    (void)argc;
+    m = lvm_obj_map_new(((lvm_std *)ud)->vm, 0);
+    if (lvm_is_nil(m)) return LVM_ERR_MEM;
+    args[0] = m;
+    return LVM_OK;
+}
+
+static lvm_status host_pop(void *ud, lvm_value *args, int argc)
+{
+    lvm_array *a;
+
+    (void)ud;
+    if (argc != 1) return LVM_ERR_ARGS;
+    if (!lvm_is_obj(args[0], LVM_OBJ_ARRAY)) return LVM_ERR_TYPE;
+    a = (lvm_array *)lvm_to_obj(args[0]);
+    if (a->len == 0) return LVM_ERR_BOUNDS;
+    a->len--;
+    args[0] = a->items[a->len];
+    return LVM_OK;
+}
+
+static lvm_status host_keys(void *ud, lvm_value *args, int argc)
+{
+    lvm_vm *vm = ((lvm_std *)ud)->vm;
+    const lvm_map *m;
+    lvm_value arr;
+    uint32_t i, n = 0;
+
+    if (argc != 1) return LVM_ERR_ARGS;
+    if (!lvm_is_obj(args[0], LVM_OBJ_MAP)) return LVM_ERR_TYPE;
+    m = (const lvm_map *)lvm_to_obj(args[0]);
+    arr = lvm_obj_array_new(vm, m->count); /* the map stays rooted in args[0] */
+    if (lvm_is_nil(arr)) return LVM_ERR_MEM;
+    for (i = 0; i < m->cap; i++) {
+        if (m->tab[i].key == LVM_EMPTY_KEY) continue;
+        if (lvm_obj_set(vm, arr, lvm_int((int64_t)n++), m->tab[i].key) != LVM_OK) return LVM_ERR_MEM;
+    }
+    args[0] = arr;
+    return LVM_OK;
+}
+
+static int cmp_num(const void *x, const void *y)
+{
+    double a = 0, b = 0;
+
+    arg_double(*(const lvm_value *)x, &a);
+    arg_double(*(const lvm_value *)y, &b);
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+static int cmp_str(const void *x, const void *y)
+{
+    const lvm_string *a = (const lvm_string *)lvm_to_obj(*(const lvm_value *)x);
+    const lvm_string *b = (const lvm_string *)lvm_to_obj(*(const lvm_value *)y);
+    size_t n = a->len < b->len ? a->len : b->len;
+    int r = memcmp(a->data, b->data, n);
+
+    if (r) return r;
+    return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0);
+}
+
+/* sort(a): in place, ascending; all numbers or all strings */
+static lvm_status host_sort(void *ud, lvm_value *args, int argc)
+{
+    lvm_array *a;
+    uint32_t i;
+    int nums = 1, strs = 1;
+
+    (void)ud;
+    if (argc != 1) return LVM_ERR_ARGS;
+    if (!lvm_is_obj(args[0], LVM_OBJ_ARRAY)) return LVM_ERR_TYPE;
+    a = (lvm_array *)lvm_to_obj(args[0]);
+    for (i = 0; i < a->len; i++) {
+        double d;
+        if (!arg_double(a->items[i], &d) || lvm_is_bool(a->items[i])) nums = 0;
+        if (!lvm_is_string(a->items[i])) strs = 0;
+    }
+    if (!nums && !strs) return LVM_ERR_TYPE;
+    if (a->len > 1) qsort(a->items, a->len, sizeof(lvm_value), nums ? cmp_num : cmp_str);
+    return LVM_OK;
+}
+
+/* ---- math ---- */
+
+#define MATH1(NAME, EXPR)                                                  \
+static lvm_status NAME(void *ud, lvm_value *args, int argc)                \
+{                                                                          \
+    double x;                                                              \
+    (void)ud;                                                              \
+    if (argc != 1) return LVM_ERR_ARGS;                                    \
+    if (!arg_double(args[0], &x)) return LVM_ERR_TYPE;                     \
+    args[0] = lvm_float(EXPR);                                             \
+    return LVM_OK;                                                         \
+}
+
+MATH1(host_sqrt, sqrt(x))
+MATH1(host_sin, sin(x))
+MATH1(host_cos, cos(x))
+MATH1(host_tan, tan(x))
+MATH1(host_exp, exp(x))
+MATH1(host_log, log(x))
+
+#define MATH2(NAME, EXPR)                                                  \
+static lvm_status NAME(void *ud, lvm_value *args, int argc)                \
+{                                                                          \
+    double x, y;                                                           \
+    (void)ud;                                                              \
+    if (argc != 2) return LVM_ERR_ARGS;                                    \
+    if (!arg_double(args[0], &x) || !arg_double(args[1], &y)) return LVM_ERR_TYPE; \
+    args[0] = lvm_float(EXPR);                                             \
+    return LVM_OK;                                                         \
+}
+
+MATH2(host_atan2, atan2(x, y))
+MATH2(host_pow, pow(x, y))
+
+/* floor and ceil give an int when the result fits */
+static lvm_value round_result(double d)
+{
+    if (d == d && fits_double_int(d)) return lvm_int((int64_t)d);
+    return lvm_float(d);
+}
+
+static lvm_status host_floor(void *ud, lvm_value *args, int argc)
+{
+    double x;
+
+    (void)ud;
+    if (argc != 1) return LVM_ERR_ARGS;
+    if (!arg_double(args[0], &x)) return LVM_ERR_TYPE;
+    args[0] = round_result(floor(x));
+    return LVM_OK;
+}
+
+static lvm_status host_ceil(void *ud, lvm_value *args, int argc)
+{
+    double x;
+
+    (void)ud;
+    if (argc != 1) return LVM_ERR_ARGS;
+    if (!arg_double(args[0], &x)) return LVM_ERR_TYPE;
+    args[0] = round_result(ceil(x));
+    return LVM_OK;
+}
+
+static lvm_status host_abs(void *ud, lvm_value *args, int argc)
+{
+    (void)ud;
+    if (argc != 1) return LVM_ERR_ARGS;
+    if (lvm_is_int(args[0])) {
+        int64_t v = lvm_as_int(args[0]);
+        args[0] = v < 0 ? int_or_float(-v) : args[0];
+    } else if (lvm_is_float(args[0])) {
+        args[0] = lvm_float(fabs(lvm_as_float(args[0])));
+    } else {
+        return LVM_ERR_TYPE;
+    }
+    return LVM_OK;
+}
+
+static lvm_status minmax(lvm_value *args, int argc, int want_max)
+{
+    double a, b;
+
+    if (argc != 2) return LVM_ERR_ARGS;
+    if (!arg_double(args[0], &a) || !arg_double(args[1], &b) ||
+        lvm_is_bool(args[0]) || lvm_is_bool(args[1]))
+        return LVM_ERR_TYPE;
+    if (want_max ? b > a : b < a) args[0] = args[1];
+    return LVM_OK;
+}
+
+static lvm_status host_min(void *ud, lvm_value *args, int argc)
+{
+    (void)ud;
+    return minmax(args, argc, 0);
+}
+
+static lvm_status host_max(void *ud, lvm_value *args, int argc)
+{
+    (void)ud;
+    return minmax(args, argc, 1);
+}
+
+static lvm_status host_rand(void *ud, lvm_value *args, int argc)
+{
+    lvm_std *s = ud;
+    uint64_t x = s->rng;
+
+    (void)argc;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    s->rng = x;
+    args[0] = lvm_int((int64_t)((x * UINT64_C(0x2545F4914F6CDD1D)) >> 33)); /* 31 bits */
+    return LVM_OK;
+}
+
+static lvm_status host_srand(void *ud, lvm_value *args, int argc)
+{
+    lvm_std *s = ud;
+    long long v;
+
+    if (argc != 1 || !arg_ll(args[0], &v)) return LVM_ERR_TYPE;
+    s->rng = (uint64_t)v * UINT64_C(0x9E3779B97F4A7C15) + 1;
+    args[0] = lvm_nil();
+    return LVM_OK;
+}
+
+static lvm_status host_clock(void *ud, lvm_value *args, int argc)
+{
+    (void)ud;
+    (void)argc;
+    args[0] = lvm_float((double)clock() / (double)CLOCKS_PER_SEC);
+    return LVM_OK;
+}
+
+/* ---- registration ---- */
+
+static const struct { int id; lvm_host_fn fn; } std_table[] = {
+    { LVM_STD_PRINT, host_print },   { LVM_STD_PRINTF, host_printf },
+    { LVM_STD_SCAN, host_scan },     { LVM_STD_READLINE, host_readline },
+    { LVM_STD_GETCHAR, host_getchar }, { LVM_STD_PUTCHAR, host_putchar },
+    { LVM_STD_INT, host_int },       { LVM_STD_FLOAT, host_float },
+    { LVM_STD_STR, host_str },       { LVM_STD_SUBSTR, host_substr },
+    { LVM_STD_STRCMP, host_strcmp }, { LVM_STD_CHR, host_chr },
+    { LVM_STD_FIND, host_find },     { LVM_STD_SPLIT, host_split },
+    { LVM_STD_ARRAY, host_array },   { LVM_STD_MAP, host_map },
+    { LVM_STD_POP, host_pop },       { LVM_STD_KEYS, host_keys },
+    { LVM_STD_SORT, host_sort },
+    { LVM_STD_SQRT, host_sqrt },     { LVM_STD_SIN, host_sin },
+    { LVM_STD_COS, host_cos },       { LVM_STD_TAN, host_tan },
+    { LVM_STD_ATAN2, host_atan2 },   { LVM_STD_POW, host_pow },
+    { LVM_STD_EXP, host_exp },       { LVM_STD_LOG, host_log },
+    { LVM_STD_FLOOR, host_floor },   { LVM_STD_CEIL, host_ceil },
+    { LVM_STD_ABS, host_abs },       { LVM_STD_MIN, host_min },
+    { LVM_STD_MAX, host_max },       { LVM_STD_RAND, host_rand },
+    { LVM_STD_SRAND, host_srand },   { LVM_STD_CLOCK, host_clock }
+};
+
+lvm_std *lvm_std_new(lvm_vm *vm, const lvm_std_io *io)
+{
+    lvm_std *s = LVM_MEM(&vm->alloc, NULL, 0, sizeof *s);
+    size_t i;
+
+    if (!s) return NULL;
+    memset(s, 0, sizeof *s);
+    s->vm = vm;
+    if (io) {
+        s->io = *io;
+    } else {
+        s->io.read_char = stdio_read;
+        s->io.write = stdio_write;
+    }
+    s->peeked = -2;
+    s->rng = UINT64_C(0x2545F4914F6CDD1D);
+    for (i = 0; i < sizeof std_table / sizeof std_table[0]; i++)
+        lvm_set_host(vm, (unsigned)std_table[i].id, std_table[i].fn, s);
+    return s;
+}
+
+void lvm_std_free(lvm_std *s)
+{
+    lvm_allocator a;
+
+    if (!s) return;
+    a = s->vm->alloc;
+    LVM_MEM(&a, s, sizeof *s, 0);
+}
