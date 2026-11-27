@@ -6,7 +6,7 @@ LIB_SRC = src/util.c src/loader.c src/verify.c src/vm.c \
           src/object.c src/gc.c src/container.c src/closure.c src/asm.c src/disasm.c src/host_std.c src/lvc.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
-all: liblvm.a lvmi lvma lvmdis
+all: liblvm.a lvmi lvma lvmdis lvcc
 
 liblvm.a: $(LIB_OBJ)
 	$(AR) rcs $@ $(LIB_OBJ)
@@ -22,6 +22,9 @@ lvma: tools/lvma.c liblvm.a
 
 lvmdis: tools/lvmdis.c liblvm.a
 	$(CC) $(CFLAGS) -o $@ tools/lvmdis.c liblvm.a -lm
+
+lvcc: tools/lvcc.c liblvm.a
+	$(CC) $(CFLAGS) -o $@ tools/lvcc.c liblvm.a -lm
 
 tests/test_vm: tests/test_vm.c liblvm.a
 	$(CC) $(CFLAGS) -o $@ tests/test_vm.c liblvm.a -lm
@@ -40,6 +43,6 @@ portable: clean
 	$(MAKE) CFLAGS="-O2 -pedantic -DLVM_NO_COMPUTED_GOTO" all test
 
 clean:
-	rm -f src/*.o liblvm.a lvmi lvma lvmdis tests/test_vm tests/test_asm
+	rm -f src/*.o liblvm.a lvmi lvma lvmdis lvcc tests/test_vm tests/test_asm
 
 .PHONY: all test portable clean
