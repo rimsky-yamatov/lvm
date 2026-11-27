@@ -1797,3 +1797,341 @@ static void gen_into(cc *c, node *e, int dst)
     }
     c->top = mark;
 }
+
+/* ---- code generation: statements and functions ---- */
+
+static void gen_stmt(cc *c, node *s);
+
+/* the value a declaration starts with; dst is the register just allocated */
+static void gen_decl_value(cc *c, node *d, int dst)
+{
+    c->line = d->line;
+    if (d->ival) { /* name[size] or name[] = ... */
+        if (d->a) {
+            gen_into(c, d->a, dst);
+        } else if (d->b) {
+            int r;
+            if (dst != c->top - 1) die(c, "internal error: array declaration register");
+            gen_into(c, d->b, dst);
+            r = alloc(c);
+            switch (d->op) {
+            case T_INT: case T_FLOAT: case T_BOOL: case T_STRING: gen_default(c, d->op, r); break;
+            default: emit(c, "LDNIL R%d", r); break;
+            }
+            emit(c, "HOST R%d, 2, %d", dst, LVM_STD_ARRAY);
+            c->top = dst + 1;
+        } else {
+            die(c, "an array declaration needs a size or an initializer");
+        }
+    } else if (d->a) {
+        gen_into(c, d->a, dst);
+    } else {
+        gen_default(c, d->op, dst);
+    }
+}
+
+/* a statement used for its effect only */
+static void gen_discard(cc *c, node *e)
+{
+    int mark = c->top;
+
+    if (e->kind == N_ASSIGN) gen_assign(c, e);
+    else if (e->kind == N_INCDEC) gen_incdec(c, e, 0);
+    else gen(c, e);
+    c->top = mark;
+}
+
+/* a loop or branch body gets a scope of its own */
+static void gen_scoped(cc *c, node *s)
+{
+    size_t nl = c->nloc, sb = c->scope_base;
+    int mark = c->top;
+
+    c->scope_base = c->nloc;
+    gen_stmt(c, s);
+    c->nloc = nl;
+    c->scope_base = sb;
+    c->top = mark;
+}
+
+static void push_loop(cc *c, int brk, int cont)
+{
+    loopctx l;
+
+    l.brk = brk;
+    l.cont = cont;
+    l.tries = c->tries;
+    VPUSH(c, c->loops, c->nloops, c->caploops, l);
+}
+
+static void gen_stmt(cc *c, node *s)
+{
+    int mark = c->top;
+    node *x;
+
+    c->line = s->line;
+    switch (s->kind) {
+    case N_EMPTY:
+        break;
+    case N_BLOCK: {
+        size_t nl = c->nloc, sb = c->scope_base;
+        c->scope_base = c->nloc;
+        for (x = s->a; x; x = x->next) gen_stmt(c, x);
+        c->nloc = nl;
+        c->scope_base = sb;
+        break;
+    }
+    case N_DECLS: /* the variables stay allocated until the end of the block */
+        for (x = s->a; x; x = x->next) {
+            int reg = alloc(c);
+            gen_decl_value(c, x, reg);
+            declare_local(c, x->str, reg);
+            c->top = reg + 1;
+        }
+        return;
+    case N_EXPR:
+        gen_discard(c, s->a);
+        break;
+    case N_IF: {
+        int le = newlabel(c);
+        gen_jump(c, s->a, 0, le);
+        gen_scoped(c, s->b);
+        if (s->c) {
+            int lend = newlabel(c);
+            emit(c, "JMP .L%d", lend);
+            place(c, le);
+            gen_scoped(c, s->c);
+            place(c, lend);
+        } else {
+            place(c, le);
+        }
+        break;
+    }
+    case N_WHILE: {
+        int lc = newlabel(c), le = newlabel(c);
+        place(c, lc);
+        gen_jump(c, s->a, 0, le);
+        push_loop(c, le, lc);
+        gen_scoped(c, s->b);
+        c->nloops--;
+        emit(c, "JMP .L%d", lc);
+        place(c, le);
+        break;
+    }
+    case N_DO: {
+        int lt = newlabel(c), lc = newlabel(c), le = newlabel(c);
+        place(c, lt);
+        push_loop(c, le, lc);
+        gen_scoped(c, s->b);
+        c->nloops--;
+        place(c, lc);
+        gen_jump(c, s->a, 1, lt);
+        place(c, le);
+        break;
+    }
+    case N_FOR: {
+        size_t nl = c->nloc, sb = c->scope_base;
+        int lcond = newlabel(c), lstep = newlabel(c), lend = newlabel(c);
+        c->scope_base = c->nloc;
+        if (s->a) gen_stmt(c, s->a);
+        place(c, lcond);
+        if (s->b) gen_jump(c, s->b, 0, lend);
+        push_loop(c, lend, lstep);
+        gen_scoped(c, s->d);
+        c->nloops--;
+        place(c, lstep);
+        if (s->c) gen_discard(c, s->c);
+        emit(c, "JMP .L%d", lcond);
+        place(c, lend);
+        c->nloc = nl;
+        c->scope_base = sb;
+        break;
+    }
+    case N_BREAK: case N_CONTINUE: {
+        const loopctx *l;
+        int k;
+        if (!c->nloops) die(c, "%s outside a loop", s->kind == N_BREAK ? "break" : "continue");
+        l = &c->loops[c->nloops - 1];
+        for (k = c->tries - l->tries; k > 0; k--) emit(c, "ENDTRY"); /* leave the try blocks */
+        emit(c, "JMP .L%d", s->kind == N_BREAK ? l->brk : l->cont);
+        break;
+    }
+    case N_RETURN: {
+        int r;
+        if (s->a) {
+            r = gen(c, s->a);
+        } else {
+            r = alloc(c);
+            emit(c, "LDNIL R%d", r);
+        }
+        emit(c, "RET R%d", r);
+        break;
+    }
+    case N_THROW: {
+        int r = gen(c, s->a);
+        emit(c, "THROW R%d", r);
+        break;
+    }
+    case N_TRY: {
+        int exc = alloc(c), lcatch = newlabel(c), lend = newlabel(c);
+        size_t nl = c->nloc, sb = c->scope_base;
+        emit(c, "TRY R%d, .L%d", exc, lcatch);
+        c->tries++;
+        gen_stmt(c, s->a);
+        c->tries--;
+        emit(c, "ENDTRY");
+        emit(c, "JMP .L%d", lend);
+        place(c, lcatch);
+        c->scope_base = c->nloc;
+        if (s->str) declare_local(c, s->str, exc);
+        gen_stmt(c, s->b);
+        c->nloc = nl;
+        c->scope_base = sb;
+        place(c, lend);
+        break;
+    }
+    default:
+        die(c, "internal error: bad statement");
+    }
+    c->top = mark;
+}
+
+static void reset_function_state(cc *c)
+{
+    c->nloc = 0;
+    c->nloops = 0;
+    c->tries = 0;
+    c->labels = 0;
+    c->scope_base = 0;
+    c->top = 1; /* R0 holds the globals */
+}
+
+static void gen_function(cc *c, fn *f)
+{
+    node *p;
+    int i = 0, r;
+
+    reset_function_state(c);
+    c->line = f->line;
+    buf_printf(c, "\nu_%s:\n    .params %d\n", f->name, f->nparams + 1);
+    for (p = f->params; p; p = p->next, i++) {
+        c->line = p->line;
+        declare_local(c, p->str, 1 + i);
+    }
+    c->top = 1 + f->nparams;
+    gen_stmt(c, f->body);
+    r = alloc(c); /* falling off the end returns nil */
+    emit(c, "LDNIL R%d", r);
+    emit(c, "RET R%d", r);
+}
+
+/* the program entry: build the globals, run their initialisers, call main */
+static void gen_entry(cc *c)
+{
+    node *g;
+    int t;
+
+    reset_function_state(c);
+    buf_printf(c, "main:\n");
+    emit(c, "NEWARR R0");
+    for (g = c->globals; g; g = g->next) {
+        int reg = alloc(c), k;
+        gen_decl_value(c, g, reg);
+        k = alloc(c);
+        emit(c, "LDI R%d, %d", k, find_global(c, g->str));
+        emit(c, "SET R0, R%d, R%d", k, reg);
+        c->top = reg;
+    }
+    t = alloc(c);
+    emit(c, "MOV R%d, R0", t);
+    emit(c, "CALL R%d, u_main", t);
+    emit(c, "RET R%d", t);
+}
+
+static void compile_program(cc *c)
+{
+    node *g;
+    size_t i, j;
+    fn *mainf;
+
+    parse_program(c);
+
+    for (g = c->globals; g; g = g->next) {
+        global gl;
+        c->line = g->line;
+        if (find_global(c, g->str) >= 0) die(c, "global '%s' is declared twice", g->str);
+        gl.name = g->str;
+        gl.idx = (int)c->ngl;
+        VPUSH(c, c->gtab, c->ngl, c->capgl, gl);
+    }
+    for (i = 0; i < c->nfns; i++) {
+        c->line = c->fns[i].line;
+        if (find_builtin(c->fns[i].name))
+            die(c, "'%s' is a built-in function and cannot be redefined", c->fns[i].name);
+        for (j = 0; j < i; j++) {
+            if (strcmp(c->fns[j].name, c->fns[i].name) == 0)
+                die(c, "function '%s' is defined twice", c->fns[i].name);
+        }
+        if (c->fns[i].nparams > 250) die(c, "too many parameters");
+    }
+    mainf = find_fn(c, "main");
+    if (!mainf) {
+        c->line = 0;
+        die(c, "the program has no main function");
+    }
+    c->line = mainf->line;
+    if (mainf->nparams != 0) die(c, "main takes no parameters");
+
+    gen_entry(c);
+    for (i = 0; i < c->nfns; i++) gen_function(c, &c->fns[i]);
+}
+
+/* errors longjmp back here; nothing else lives in this frame */
+static void compile_all(cc *c, const char *src, size_t len)
+{
+    if (setjmp(c->jb) == 0) {
+        lex(c, src, len);
+        compile_program(c);
+    }
+}
+
+lvm_status lvm_compile(const lvm_allocator *a, const char *src, size_t len,
+                       char **out, size_t *out_len, char *err, size_t err_size)
+{
+    cc *c;
+    lvm_status st;
+
+    if (!a) a = lvm_default_allocator();
+    *out = NULL;
+    *out_len = 0;
+    if (err_size) err[0] = '\0';
+    c = LVM_MEM(a, NULL, 0, sizeof *c);
+    if (!c) return LVM_ERR_MEM;
+    memset(c, 0, sizeof *c);
+    c->a = *a;
+    c->err = err;
+    c->errsz = err_size;
+
+    compile_all(c, src, len);
+    if (c->status == LVM_OK) {
+        char *text = LVM_MEM(a, NULL, 0, c->nbuf + 1);
+        if (!text) {
+            c->status = LVM_ERR_MEM;
+        } else {
+            memcpy(text, c->buf, c->nbuf);
+            text[c->nbuf] = '\0';
+            *out = text;
+            *out_len = c->nbuf;
+        }
+    }
+    st = c->status;
+    release(c);
+    LVM_MEM(a, c, sizeof *c, 0);
+    return st;
+}
+
+void lvm_compile_free(const lvm_allocator *a, char *text, size_t len)
+{
+    if (!a) a = lvm_default_allocator();
+    if (text) LVM_MEM(a, text, len + 1, 0);
+}
