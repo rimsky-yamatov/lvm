@@ -427,3 +427,599 @@ static void lex(cc *c, const char *s, size_t n)
     }
     add_tok(c, TK_EOF, c->line);
 }
+
+/* ---- parser ---- */
+
+static tok *cur(cc *c)
+{
+    return &c->toks[c->pos];
+}
+
+static tok *peek_at(cc *c, size_t k)
+{
+    size_t i = c->pos + k;
+
+    if (i >= c->ntoks) i = c->ntoks - 1;
+    return &c->toks[i];
+}
+
+static int at(cc *c, int kind)
+{
+    return cur(c)->kind == kind;
+}
+
+static tok *advance(cc *c)
+{
+    tok *t = cur(c);
+
+    if (t->kind != TK_EOF) c->pos++;
+    c->line = t->line;
+    return t;
+}
+
+static int accept(cc *c, int kind)
+{
+    if (!at(c, kind)) return 0;
+    advance(c);
+    return 1;
+}
+
+static void expect(cc *c, int kind, const char *what)
+{
+    if (!at(c, kind)) {
+        c->line = cur(c)->line;
+        die(c, "expected %s", what);
+    }
+    advance(c);
+}
+
+static node *mk(cc *c, int kind)
+{
+    node *n = zalloc(c, sizeof *n);
+
+    n->kind = kind;
+    n->line = c->line;
+    return n;
+}
+
+static int is_lvalue(const node *n)
+{
+    return n->kind == N_VAR || n->kind == N_INDEX || n->kind == N_MEMBER;
+}
+
+static node *parse_assign(cc *c);
+static node *parse_expr(cc *c);
+static node *parse_stmt(cc *c);
+static node *parse_block(cc *c);
+
+/* the argument list of a call; the '(' has been consumed */
+static node *parse_args(cc *c)
+{
+    node *head = NULL, *tail = NULL;
+
+    if (accept(c, ')')) return NULL;
+    do {
+        node *a = parse_assign(c);
+        if (tail) tail->next = a;
+        else head = a;
+        tail = a;
+    } while (accept(c, ','));
+    expect(c, ')', "')' after the arguments");
+    return head;
+}
+
+static node *parse_primary(cc *c)
+{
+    tok *t = cur(c);
+    node *n;
+
+    c->line = t->line;
+    switch (t->kind) {
+    case TK_INT:
+        advance(c);
+        n = mk(c, N_INT);
+        n->ival = t->ival;
+        return n;
+    case TK_FLOAT:
+        advance(c);
+        n = mk(c, N_FLOAT);
+        n->fval = t->fval;
+        return n;
+    case TK_STR:
+        advance(c);
+        n = mk(c, N_STR);
+        n->str = t->text;
+        n->slen = t->len;
+        return n;
+    case KW_TRUE: case KW_FALSE:
+        advance(c);
+        n = mk(c, N_BOOL);
+        n->ival = t->kind == KW_TRUE;
+        return n;
+    case KW_NIL:
+        advance(c);
+        return mk(c, N_NIL);
+    case TK_IDENT:
+        advance(c);
+        if (accept(c, '(')) {
+            n = mk(c, N_CALL);
+            n->str = t->text;
+            n->a = parse_args(c);
+            return n;
+        }
+        n = mk(c, N_VAR);
+        n->str = t->text;
+        return n;
+    case KW_TYPE: { /* int(x), float(x), string(x), array(n), map() */
+        const char *name = NULL;
+        if (peek_at(c, 1)->kind != '(') die(c, "unexpected type name");
+        switch (t->ival) {
+        case T_INT: name = "int"; break;
+        case T_FLOAT: name = "float"; break;
+        case T_STRING: name = "str"; break;
+        case T_ARRAY: name = "array"; break;
+        case T_MAP: name = "map"; break;
+        default: die(c, "this type cannot be used like a function");
+        }
+        advance(c);
+        advance(c);
+        n = mk(c, N_CALL);
+        n->str = (char *)name;
+        n->a = parse_args(c);
+        return n;
+    }
+    case '(':
+        advance(c);
+        n = parse_expr(c);
+        expect(c, ')', "')'");
+        return n;
+    case '[': { /* array literal */
+        node *tail = NULL;
+        advance(c);
+        n = mk(c, N_ARRAY);
+        while (!at(c, ']')) {
+            node *e = parse_assign(c);
+            if (tail) tail->next = e;
+            else n->a = e;
+            tail = e;
+            if (!accept(c, ',')) break;
+        }
+        expect(c, ']', "']'");
+        return n;
+    }
+    case '{': { /* {1, 2, 3} is an array, {"k": v} a map, {} an empty map */
+        node *first, *tail = NULL;
+        advance(c);
+        if (accept(c, '}')) return mk(c, N_MAP);
+        first = parse_assign(c);
+        if (at(c, ':')) {
+            node *e;
+            n = mk(c, N_MAP);
+            for (;;) {
+                e = mk(c, N_ENTRY);
+                e->a = first;
+                expect(c, ':', "':' after the key");
+                e->b = parse_assign(c);
+                if (tail) tail->next = e;
+                else n->a = e;
+                tail = e;
+                if (!accept(c, ',') || at(c, '}')) break;
+                first = parse_assign(c);
+            }
+        } else {
+            n = mk(c, N_ARRAY);
+            n->a = first;
+            tail = first;
+            while (accept(c, ',') && !at(c, '}')) {
+                node *e = parse_assign(c);
+                tail->next = e;
+                tail = e;
+            }
+        }
+        expect(c, '}', "'}'");
+        return n;
+    }
+    default:
+        die(c, "expected an expression");
+    }
+}
+
+static node *parse_postfix(cc *c)
+{
+    node *n = parse_primary(c);
+
+    for (;;) {
+        if (at(c, '[')) {
+            node *i;
+            advance(c);
+            i = mk(c, N_INDEX);
+            i->a = n;
+            i->b = parse_expr(c);
+            expect(c, ']', "']'");
+            n = i;
+        } else if (at(c, '.')) {
+            node *m;
+            advance(c);
+            if (!at(c, TK_IDENT)) die(c, "expected a field name after '.'");
+            m = mk(c, N_MEMBER);
+            m->a = n;
+            m->str = advance(c)->text;
+            n = m;
+        } else if (at(c, TK_INC) || at(c, TK_DEC)) {
+            node *p;
+            if (!is_lvalue(n)) die(c, "++ and -- need a variable, element or field");
+            p = mk(c, N_INCDEC);
+            p->op = advance(c)->kind;
+            p->a = n;
+            n = p;
+        } else {
+            return n;
+        }
+    }
+}
+
+static node *parse_unary(cc *c)
+{
+    tok *t = cur(c);
+    node *n, *a;
+
+    c->line = t->line;
+    switch (t->kind) {
+    case '-':
+        advance(c);
+        a = parse_unary(c);
+        if (a->kind == N_INT) { a->ival = -a->ival; return a; }
+        if (a->kind == N_FLOAT) { a->fval = -a->fval; return a; }
+        n = mk(c, N_UNARY);
+        n->op = '-';
+        n->a = a;
+        return n;
+    case '+':
+        advance(c);
+        return parse_unary(c);
+    case '!': case '~':
+        advance(c);
+        n = mk(c, N_UNARY);
+        n->op = t->kind;
+        n->a = parse_unary(c);
+        return n;
+    case '&':
+        advance(c);
+        n = mk(c, N_ADDR);
+        n->a = parse_unary(c);
+        if (!is_lvalue(n->a)) die(c, "& needs a variable, element or field");
+        return n;
+    case TK_INC: case TK_DEC:
+        advance(c);
+        n = mk(c, N_INCDEC);
+        n->op = t->kind;
+        n->ival = 1; /* prefix */
+        n->a = parse_unary(c);
+        if (!is_lvalue(n->a)) die(c, "++ and -- need a variable, element or field");
+        return n;
+    case '(':
+        if (peek_at(c, 1)->kind == KW_TYPE) { /* a cast */
+            int type = 0;
+            advance(c);
+            while (at(c, KW_TYPE)) type = (int)advance(c)->ival;
+            expect(c, ')', "')' after the type");
+            n = mk(c, N_CAST);
+            n->op = type;
+            n->a = parse_unary(c);
+            return n;
+        }
+        return parse_postfix(c);
+    default:
+        return parse_postfix(c);
+    }
+}
+
+static int binprec(int k)
+{
+    switch (k) {
+    case TK_OROR: return 1;
+    case TK_ANDAND: return 2;
+    case '|': return 3;
+    case '^': return 4;
+    case '&': return 5;
+    case TK_EQ: case TK_NE: return 6;
+    case '<': case '>': case TK_LE: case TK_GE: return 7;
+    case TK_SHL: case TK_SHR: return 8;
+    case '+': case '-': return 9;
+    case '*': case '/': case '%': return 10;
+    default: return 0;
+    }
+}
+
+static node *parse_binary(cc *c, int min)
+{
+    node *left = parse_unary(c);
+
+    for (;;) {
+        int op = cur(c)->kind, p = binprec(op);
+        node *n, *right;
+
+        if (p == 0 || p < min) return left;
+        advance(c);
+        right = parse_binary(c, p + 1);
+        n = mk(c, op == TK_ANDAND ? N_AND : (op == TK_OROR ? N_OR : N_BINARY));
+        n->op = op;
+        n->a = left;
+        n->b = right;
+        left = n;
+    }
+}
+
+static node *parse_ternary(cc *c)
+{
+    node *cond = parse_binary(c, 1), *n;
+
+    if (!at(c, '?')) return cond;
+    advance(c);
+    n = mk(c, N_COND);
+    n->a = cond;
+    n->b = parse_assign(c);
+    expect(c, ':', "':' in the conditional expression");
+    n->c = parse_ternary(c);
+    return n;
+}
+
+static int assign_op(int kind)
+{
+    switch (kind) {
+    case '=': return -1;
+    case TK_ADDEQ: return '+';
+    case TK_SUBEQ: return '-';
+    case TK_MULEQ: return '*';
+    case TK_DIVEQ: return '/';
+    case TK_MODEQ: return '%';
+    case TK_ANDEQ: return '&';
+    case TK_OREQ: return '|';
+    case TK_XOREQ: return '^';
+    case TK_SHLEQ: return TK_SHL;
+    case TK_SHREQ: return TK_SHR;
+    default: return -2;
+    }
+}
+
+static node *parse_assign(cc *c)
+{
+    node *lhs = parse_ternary(c), *n;
+    int op = assign_op(cur(c)->kind);
+
+    if (op == -2) return lhs;
+    if (!is_lvalue(lhs)) die(c, "the left side of an assignment must be a variable, element or field");
+    advance(c);
+    n = mk(c, N_ASSIGN);
+    n->op = op == -1 ? 0 : op;
+    n->a = lhs;
+    n->b = parse_assign(c);
+    return n;
+}
+
+static node *parse_expr(cc *c)
+{
+    return parse_assign(c);
+}
+
+/* ---- declarations and statements ---- */
+
+static int parse_type(cc *c)
+{
+    int type = 0;
+
+    if (!at(c, KW_TYPE)) die(c, "expected a type");
+    while (at(c, KW_TYPE)) type = (int)advance(c)->ival; /* "long long", "unsigned int" */
+    return type;
+}
+
+/* name [ '[' size ']' ] [ '=' init ] { ',' ... } ';'  -- the first name is already read */
+static node *parse_declarators(cc *c, int type, tok *name)
+{
+    node *head = NULL, *tail = NULL;
+
+    for (;;) {
+        node *d = mk(c, N_DECL);
+        d->op = type;
+        d->str = name->text;
+        d->line = name->line;
+        if (type == T_VOID) die(c, "a variable cannot have type void");
+        if (accept(c, '[')) {
+            d->ival = 1; /* array declarator */
+            if (!at(c, ']')) d->b = parse_expr(c);
+            expect(c, ']', "']'");
+            if (at(c, '[')) die(c, "multi-dimensional arrays are not supported; use an array of arrays");
+        }
+        if (accept(c, '=')) d->a = parse_assign(c);
+        if (tail) tail->next = d;
+        else head = d;
+        tail = d;
+        if (!accept(c, ',')) break;
+        if (!at(c, TK_IDENT)) die(c, "expected a variable name");
+        name = advance(c);
+    }
+    expect(c, ';', "';' after the declaration");
+    return head;
+}
+
+static node *parse_decl_stmt(cc *c)
+{
+    int type = parse_type(c);
+    node *n;
+
+    if (!at(c, TK_IDENT)) die(c, "expected a variable name");
+    n = mk(c, N_DECLS);
+    n->a = parse_declarators(c, type, advance(c));
+    return n;
+}
+
+static node *parse_block(cc *c)
+{
+    node *b, *tail = NULL;
+
+    expect(c, '{', "'{'");
+    b = mk(c, N_BLOCK);
+    while (!at(c, '}')) {
+        node *s;
+        if (at(c, TK_EOF)) die(c, "missing '}' at the end of the block");
+        s = parse_stmt(c);
+        if (tail) tail->next = s;
+        else b->a = s;
+        tail = s;
+    }
+    advance(c);
+    return b;
+}
+
+static node *parse_stmt(cc *c)
+{
+    tok *t = cur(c);
+    node *n;
+
+    c->line = t->line;
+    switch (t->kind) {
+    case '{':
+        return parse_block(c);
+    case ';':
+        advance(c);
+        return mk(c, N_EMPTY);
+    case KW_IF:
+        advance(c);
+        n = mk(c, N_IF);
+        expect(c, '(', "'(' after if");
+        n->a = parse_expr(c);
+        expect(c, ')', "')'");
+        n->b = parse_stmt(c);
+        if (accept(c, KW_ELSE)) n->c = parse_stmt(c);
+        return n;
+    case KW_WHILE:
+        advance(c);
+        n = mk(c, N_WHILE);
+        expect(c, '(', "'(' after while");
+        n->a = parse_expr(c);
+        expect(c, ')', "')'");
+        n->b = parse_stmt(c);
+        return n;
+    case KW_DO:
+        advance(c);
+        n = mk(c, N_DO);
+        n->b = parse_stmt(c);
+        expect(c, KW_WHILE, "'while' after the body of do");
+        expect(c, '(', "'('");
+        n->a = parse_expr(c);
+        expect(c, ')', "')'");
+        expect(c, ';', "';'");
+        return n;
+    case KW_FOR:
+        advance(c);
+        n = mk(c, N_FOR);
+        expect(c, '(', "'(' after for");
+        if (accept(c, ';')) {
+            n->a = NULL;
+        } else if (at(c, KW_TYPE) && (peek_at(c, 1)->kind == TK_IDENT || peek_at(c, 1)->kind == KW_TYPE)) {
+            n->a = parse_decl_stmt(c); /* consumes the ';' */
+        } else {
+            node *e = mk(c, N_EXPR);
+            e->a = parse_expr(c);
+            expect(c, ';', "';'");
+            n->a = e;
+        }
+        if (!at(c, ';')) n->b = parse_expr(c);
+        expect(c, ';', "';' after the condition");
+        if (!at(c, ')')) n->c = parse_expr(c);
+        expect(c, ')', "')'");
+        n->d = parse_stmt(c);
+        return n;
+    case KW_BREAK:
+        advance(c);
+        expect(c, ';', "';'");
+        return mk(c, N_BREAK);
+    case KW_CONTINUE:
+        advance(c);
+        expect(c, ';', "';'");
+        return mk(c, N_CONTINUE);
+    case KW_RETURN:
+        advance(c);
+        n = mk(c, N_RETURN);
+        if (!at(c, ';')) n->a = parse_expr(c);
+        expect(c, ';', "';' after return");
+        return n;
+    case KW_THROW:
+        advance(c);
+        n = mk(c, N_THROW);
+        n->a = parse_expr(c);
+        expect(c, ';', "';'");
+        return n;
+    case KW_TRY:
+        advance(c);
+        n = mk(c, N_TRY);
+        n->a = parse_block(c);
+        expect(c, KW_CATCH, "'catch' after the try block");
+        expect(c, '(', "'(' after catch");
+        if (at(c, TK_IDENT)) n->str = advance(c)->text;
+        expect(c, ')', "')'");
+        n->b = parse_block(c);
+        return n;
+    case KW_TYPE:
+        if (peek_at(c, 1)->kind == TK_IDENT || peek_at(c, 1)->kind == KW_TYPE) return parse_decl_stmt(c);
+        break;
+    default:
+        break;
+    }
+    n = mk(c, N_EXPR);
+    n->a = parse_expr(c);
+    expect(c, ';', "';' after the expression");
+    return n;
+}
+
+/* ---- the program ---- */
+
+static void parse_program(cc *c)
+{
+    node *gtail = NULL;
+
+    while (!at(c, TK_EOF)) {
+        int type;
+        tok *name;
+
+        c->line = cur(c)->line;
+        if (!at(c, KW_TYPE)) die(c, "expected a function or a global variable declaration");
+        type = parse_type(c);
+        if (!at(c, TK_IDENT)) die(c, "expected a name after the type");
+        name = advance(c);
+
+        if (at(c, '(')) { /* a function */
+            fn f;
+            node *ptail = NULL;
+            advance(c);
+            memset(&f, 0, sizeof f);
+            f.name = name->text;
+            f.line = name->line;
+            f.ret = type;
+            if (at(c, KW_TYPE) && cur(c)->ival == T_VOID && peek_at(c, 1)->kind == ')') {
+                advance(c);
+            } else if (!at(c, ')')) {
+                do {
+                    node *p = mk(c, N_DECL);
+                    p->op = parse_type(c);
+                    if (!at(c, TK_IDENT)) die(c, "expected a parameter name");
+                    p->str = advance(c)->text;
+                    if (accept(c, '[')) expect(c, ']', "']'"); /* int a[] */
+                    if (ptail) ptail->next = p;
+                    else f.params = p;
+                    ptail = p;
+                    f.nparams++;
+                } while (accept(c, ','));
+            }
+            expect(c, ')', "')' after the parameters");
+            if (!at(c, '{')) die(c, "expected the function body");
+            f.body = parse_block(c);
+            VPUSH(c, c->fns, c->nfns, c->capfns, f);
+        } else { /* global variables */
+            node *d = parse_declarators(c, type, name);
+            if (gtail) gtail->next = d;
+            else c->globals = d;
+            for (gtail = d; gtail->next; gtail = gtail->next) {}
+        }
+    }
+}
