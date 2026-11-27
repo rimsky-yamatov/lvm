@@ -103,6 +103,7 @@ typedef struct {
     loopctx *loops;
     size_t nloops, caploops;
     int top, labels, tries;
+    size_t scope_base;      /* first local of the innermost block */
 
     char *buf;              /* text being written */
     size_t nbuf, capbuf;
@@ -1022,4 +1023,777 @@ static void parse_program(cc *c)
             for (gtail = d; gtail->next; gtail = gtail->next) {}
         }
     }
+}
+
+/* ---- code generation: output, names, registers ---- */
+
+static void buf_put(cc *c, const char *s, size_t n)
+{
+    if (c->nbuf + n + 1 > c->capbuf) {
+        size_t nc = c->capbuf ? c->capbuf : 4096;
+        char *nb;
+        while (nc < c->nbuf + n + 1) nc *= 2;
+        nb = zalloc(c, nc);
+        if (c->nbuf) memcpy(nb, c->buf, c->nbuf);
+        c->buf = nb;
+        c->capbuf = nc;
+    }
+    memcpy(c->buf + c->nbuf, s, n);
+    c->nbuf += n;
+    c->buf[c->nbuf] = '\0';
+}
+
+static void buf_printf(cc *c, const char *fmt, ...)
+{
+    char tmp[256];
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    if (n < 0) die(c, "internal error: formatting failed");
+    if ((size_t)n < sizeof tmp) {
+        buf_put(c, tmp, (size_t)n);
+    } else {
+        char *big = zalloc(c, (size_t)n + 1);
+        va_start(ap, fmt);
+        vsnprintf(big, (size_t)n + 1, fmt, ap);
+        va_end(ap);
+        buf_put(c, big, (size_t)n);
+    }
+}
+
+/* one indented instruction line */
+static void emit(cc *c, const char *fmt, ...)
+{
+    char tmp[256];
+    va_list ap;
+    int n;
+
+    va_start(ap, fmt);
+    n = vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof tmp) die(c, "internal error: instruction text too long");
+    buf_put(c, "    ", 4);
+    buf_put(c, tmp, (size_t)n);
+    buf_put(c, "\n", 1);
+}
+
+static int newlabel(cc *c)
+{
+    return c->labels++;
+}
+
+static void place(cc *c, int l)
+{
+    buf_printf(c, ".L%d:\n", l);
+}
+
+static int alloc(cc *c)
+{
+    if (c->top > MAXR) die(c, "the expression or function needs too many registers");
+    return c->top++;
+}
+
+static void emit_int(cc *c, int reg, int64_t v)
+{
+    if (v >= -32768 && v <= 32767) {
+        emit(c, "LDI R%d, %lld", reg, (long long)v);
+    } else {
+        if (!lvm_fits_int(v)) die(c, "integer %lld does not fit in 48 bits", (long long)v);
+        emit(c, "LDK R%d, %lld", reg, (long long)v);
+    }
+}
+
+static void emit_float(cc *c, int reg, double d)
+{
+    char tmp[40];
+
+    snprintf(tmp, sizeof tmp, "%.17g", d);
+    if (!strpbrk(tmp, ".eE")) strcat(tmp, ".0");
+    emit(c, "LDK R%d, %s", reg, tmp);
+}
+
+static void emit_str(cc *c, int reg, const char *s, size_t n)
+{
+    size_t i;
+    char head[32];
+
+    snprintf(head, sizeof head, "    LDK R%d, \"", reg);
+    buf_put(c, head, strlen(head));
+    for (i = 0; i < n; i++) {
+        unsigned char ch = (unsigned char)s[i];
+        char tmp[8];
+        switch (ch) {
+        case '\n': buf_put(c, "\\n", 2); break;
+        case '\t': buf_put(c, "\\t", 2); break;
+        case '\r': buf_put(c, "\\r", 2); break;
+        case '"':  buf_put(c, "\\\"", 2); break;
+        case '\\': buf_put(c, "\\\\", 2); break;
+        default:
+            if (ch < 0x20 || ch > 0x7E) {
+                snprintf(tmp, sizeof tmp, "\\x%02X", ch);
+                buf_put(c, tmp, 4);
+            } else {
+                buf_put(c, (const char *)&ch, 1);
+            }
+        }
+    }
+    buf_put(c, "\"\n", 2);
+}
+
+/* locals: registers; globals: slots of the array in R0 */
+static int find_local(cc *c, const char *name)
+{
+    size_t i;
+
+    for (i = c->nloc; i-- > 0;) {
+        if (strcmp(c->locals[i].name, name) == 0) return c->locals[i].reg;
+    }
+    return -1;
+}
+
+static int find_global(cc *c, const char *name)
+{
+    size_t i;
+
+    for (i = 0; i < c->ngl; i++) {
+        if (strcmp(c->gtab[i].name, name) == 0) return c->gtab[i].idx;
+    }
+    return -1;
+}
+
+static void declare_local(cc *c, const char *name, int reg)
+{
+    local l;
+    size_t i;
+
+    for (i = c->scope_base; i < c->nloc; i++) {
+        if (strcmp(c->locals[i].name, name) == 0) die(c, "'%s' is already declared in this block", name);
+    }
+    l.name = (char *)name;
+    l.reg = reg;
+    VPUSH(c, c->locals, c->nloc, c->caploc, l);
+}
+
+static fn *find_fn(cc *c, const char *name)
+{
+    size_t i;
+
+    for (i = 0; i < c->nfns; i++) {
+        if (strcmp(c->fns[i].name, name) == 0) return &c->fns[i];
+    }
+    return NULL;
+}
+
+/* ---- builtins ---- */
+
+enum { B_HOST, B_LEN, B_PUSH, B_REMOVE, B_SCANF };
+
+typedef struct {
+    const char *name;
+    int id, min, max, kind;
+} builtin;
+
+static const builtin builtins[] = {
+    { "print", LVM_STD_PRINT, 0, 250, B_HOST }, { "puts", LVM_STD_PRINT, 1, 1, B_HOST },
+    { "printf", LVM_STD_PRINTF, 1, 250, B_HOST }, { "scanf", 0, 1, 250, B_SCANF },
+    { "readline", LVM_STD_READLINE, 0, 0, B_HOST }, { "getline", LVM_STD_READLINE, 0, 0, B_HOST },
+    { "getchar", LVM_STD_GETCHAR, 0, 0, B_HOST }, { "putchar", LVM_STD_PUTCHAR, 1, 1, B_HOST },
+    { "int", LVM_STD_INT, 1, 1, B_HOST }, { "atoi", LVM_STD_INT, 1, 1, B_HOST },
+    { "float", LVM_STD_FLOAT, 1, 1, B_HOST }, { "atof", LVM_STD_FLOAT, 1, 1, B_HOST },
+    { "str", LVM_STD_STR, 1, 1, B_HOST },
+    { "substr", LVM_STD_SUBSTR, 2, 3, B_HOST }, { "strcmp", LVM_STD_STRCMP, 2, 2, B_HOST },
+    { "chr", LVM_STD_CHR, 1, 1, B_HOST }, { "find", LVM_STD_FIND, 2, 3, B_HOST },
+    { "split", LVM_STD_SPLIT, 2, 2, B_HOST },
+    { "array", LVM_STD_ARRAY, 1, 2, B_HOST }, { "map", LVM_STD_MAP, 0, 0, B_HOST },
+    { "pop", LVM_STD_POP, 1, 1, B_HOST }, { "keys", LVM_STD_KEYS, 1, 1, B_HOST },
+    { "sort", LVM_STD_SORT, 1, 1, B_HOST },
+    { "len", 0, 1, 1, B_LEN }, { "strlen", 0, 1, 1, B_LEN },
+    { "push", 0, 2, 2, B_PUSH }, { "remove", 0, 2, 2, B_REMOVE },
+    { "sqrt", LVM_STD_SQRT, 1, 1, B_HOST }, { "sin", LVM_STD_SIN, 1, 1, B_HOST },
+    { "cos", LVM_STD_COS, 1, 1, B_HOST }, { "tan", LVM_STD_TAN, 1, 1, B_HOST },
+    { "atan2", LVM_STD_ATAN2, 2, 2, B_HOST }, { "pow", LVM_STD_POW, 2, 2, B_HOST },
+    { "exp", LVM_STD_EXP, 1, 1, B_HOST }, { "log", LVM_STD_LOG, 1, 1, B_HOST },
+    { "floor", LVM_STD_FLOOR, 1, 1, B_HOST }, { "ceil", LVM_STD_CEIL, 1, 1, B_HOST },
+    { "abs", LVM_STD_ABS, 1, 1, B_HOST }, { "min", LVM_STD_MIN, 2, 2, B_HOST },
+    { "max", LVM_STD_MAX, 2, 2, B_HOST }, { "rand", LVM_STD_RAND, 0, 0, B_HOST },
+    { "srand", LVM_STD_SRAND, 1, 1, B_HOST }, { "clock", LVM_STD_CLOCK, 0, 0, B_HOST }
+};
+
+static const builtin *find_builtin(const char *name)
+{
+    size_t i;
+
+    for (i = 0; i < sizeof builtins / sizeof builtins[0]; i++) {
+        if (strcmp(builtins[i].name, name) == 0) return &builtins[i];
+    }
+    return NULL;
+}
+
+static int count_nodes(const node *n)
+{
+    int k = 0;
+
+    for (; n; n = n->next) k++;
+    return k;
+}
+
+/* ---- code generation: expressions ---- */
+
+static int gen(cc *c, node *e);
+static void gen_into(cc *c, node *e, int dst);
+static void gen_jump(cc *c, node *e, int when, int lab);
+static int gen_call(cc *c, node *e, int want);
+
+static const char *binop_name(int op)
+{
+    switch (op) {
+    case '+': return "ADD";
+    case '-': return "SUB";
+    case '*': return "MUL";
+    case '/': return "DIV";
+    case '%': return "MOD";
+    case '&': return "AND";
+    case '|': return "OR";
+    case '^': return "XOR";
+    case TK_SHL: return "SHL";
+    case TK_SHR: return "SHR";
+    default: return NULL;
+    }
+}
+
+static int is_cmp(const node *e)
+{
+    if (e->kind != N_BINARY) return 0;
+    return e->op == TK_EQ || e->op == TK_NE || e->op == '<' || e->op == '>' ||
+           e->op == TK_LE || e->op == TK_GE;
+}
+
+/* a value that is not a plain variable: evaluated to a register */
+static void gen_default(cc *c, int type, int reg)
+{
+    switch (type) {
+    case T_INT:    emit(c, "LDI R%d, 0", reg); break;
+    case T_FLOAT:  emit(c, "LDK R%d, 0.0", reg); break;
+    case T_BOOL:   emit(c, "LDBOOL R%d, false", reg); break;
+    case T_STRING: emit(c, "LDK R%d, \"\"", reg); break;
+    case T_ARRAY:  emit(c, "NEWARR R%d", reg); break;
+    case T_MAP:    emit(c, "NEWMAP R%d", reg); break;
+    default:       emit(c, "LDNIL R%d", reg); break;
+    }
+}
+
+/* assignment targets, evaluated once */
+typedef struct {
+    int kind;       /* 0 local register, 1 global slot, 2 element */
+    int reg, base, key;
+} lv;
+
+static lv lv_eval(cc *c, node *n)
+{
+    lv v;
+    int r;
+
+    memset(&v, 0, sizeof v);
+    c->line = n->line;
+    if (n->kind == N_VAR) {
+        r = find_local(c, n->str);
+        if (r >= 0) {
+            v.kind = 0;
+            v.reg = r;
+        } else {
+            int g = find_global(c, n->str);
+            if (g < 0) die(c, "undefined variable '%s'", n->str);
+            v.kind = 1;
+            v.key = alloc(c);
+            emit(c, "LDI R%d, %d", v.key, g);
+        }
+    } else if (n->kind == N_INDEX) {
+        v.kind = 2;
+        v.base = gen(c, n->a);
+        v.key = gen(c, n->b);
+    } else { /* N_MEMBER */
+        v.kind = 2;
+        v.base = gen(c, n->a);
+        v.key = alloc(c);
+        emit_str(c, v.key, n->str, strlen(n->str));
+    }
+    return v;
+}
+
+/* the current value of a target, in a register (a new one unless it is a local) */
+static int lv_load(cc *c, lv v)
+{
+    int d;
+
+    if (v.kind == 0) return v.reg;
+    d = alloc(c);
+    if (v.kind == 1) emit(c, "GET R%d, R0, R%d", d, v.key);
+    else emit(c, "GET R%d, R%d, R%d", d, v.base, v.key);
+    return d;
+}
+
+static void lv_store(cc *c, lv v, int src)
+{
+    if (v.kind == 0) {
+        if (v.reg != src) emit(c, "MOV R%d, R%d", v.reg, src);
+    } else if (v.kind == 1) {
+        emit(c, "SET R0, R%d, R%d", v.key, src);
+    } else {
+        emit(c, "SET R%d, R%d, R%d", v.base, v.key, src);
+    }
+}
+
+static int gen_assign(cc *c, node *e)
+{
+    node *lhs = e->a;
+    int r, val;
+    lv t;
+
+    c->line = e->line;
+    if (lhs->kind == N_VAR && (r = find_local(c, lhs->str)) >= 0) {
+        if (e->op == 0) {
+            gen_into(c, e->b, r);
+        } else {
+            int rb = gen(c, e->b);
+            emit(c, "%s R%d, R%d, R%d", binop_name(e->op), r, r, rb);
+        }
+        return r;
+    }
+    t = lv_eval(c, lhs);
+    if (e->op == 0) {
+        val = gen(c, e->b);
+    } else {
+        int cur = lv_load(c, t);
+        int rb = gen(c, e->b);
+        val = alloc(c);
+        emit(c, "%s R%d, R%d, R%d", binop_name(e->op), val, cur, rb);
+    }
+    lv_store(c, t, val);
+    return val;
+}
+
+/* ++ and --; returns the register holding the value of the expression */
+static int gen_incdec(cc *c, node *e, int want_value)
+{
+    const char *op = e->op == TK_INC ? "ADD" : "SUB";
+    int prefix = (int)e->ival, one, nw;
+    lv t;
+
+    c->line = e->line;
+    t = lv_eval(c, e->a);
+    if (t.kind == 0) {
+        one = alloc(c);
+        emit(c, "LDI R%d, 1", one);
+        if (prefix || !want_value) {
+            emit(c, "%s R%d, R%d, R%d", op, t.reg, t.reg, one);
+            return t.reg;
+        } else {
+            int old = alloc(c);
+            emit(c, "MOV R%d, R%d", old, t.reg);
+            emit(c, "%s R%d, R%d, R%d", op, t.reg, t.reg, one);
+            return old;
+        }
+    } else {
+        int cur = lv_load(c, t);
+        one = alloc(c);
+        nw = alloc(c);
+        emit(c, "LDI R%d, 1", one);
+        emit(c, "%s R%d, R%d, R%d", op, nw, cur, one);
+        lv_store(c, t, nw);
+        return (prefix || !want_value) ? nw : cur;
+    }
+}
+
+/* comparisons and logic as true/false values */
+static void gen_bool(cc *c, node *e, int dst)
+{
+    int lt = newlabel(c), le = newlabel(c);
+
+    gen_jump(c, e, 1, lt);
+    emit(c, "LDBOOL R%d, false", dst);
+    emit(c, "JMP .L%d", le);
+    place(c, lt);
+    emit(c, "LDBOOL R%d, true", dst);
+    place(c, le);
+}
+
+/* jumps to lab when e is truthy (when = 1) or falsy (when = 0) */
+static void gen_jump(cc *c, node *e, int when, int lab)
+{
+    int mark = c->top;
+
+    c->line = e->line;
+    switch (e->kind) {
+    case N_BOOL:
+        if ((e->ival != 0) == (when != 0)) emit(c, "JMP .L%d", lab);
+        return;
+    case N_UNARY:
+        if (e->op == '!') {
+            gen_jump(c, e->a, !when, lab);
+            return;
+        }
+        break;
+    case N_AND:
+        if (!when) {
+            gen_jump(c, e->a, 0, lab);
+            gen_jump(c, e->b, 0, lab);
+        } else {
+            int skip = newlabel(c);
+            gen_jump(c, e->a, 0, skip);
+            gen_jump(c, e->b, 1, lab);
+            place(c, skip);
+        }
+        return;
+    case N_OR:
+        if (when) {
+            gen_jump(c, e->a, 1, lab);
+            gen_jump(c, e->b, 1, lab);
+        } else {
+            int skip = newlabel(c);
+            gen_jump(c, e->a, 1, skip);
+            gen_jump(c, e->b, 0, lab);
+            place(c, skip);
+        }
+        return;
+    case N_BINARY:
+        if (is_cmp(e)) {
+            int a = gen(c, e->a), b = gen(c, e->b);
+            switch (e->op) {
+            case TK_EQ: emit(c, "%s R%d, R%d, .L%d", when ? "JEQ" : "JNE", a, b, lab); break;
+            case TK_NE: emit(c, "%s R%d, R%d, .L%d", when ? "JNE" : "JEQ", a, b, lab); break;
+            case '<':
+                if (when) emit(c, "JLT R%d, R%d, .L%d", a, b, lab);
+                else { emit(c, "LT 0, R%d, R%d", a, b); emit(c, "JMP .L%d", lab); }
+                break;
+            case '>':
+                if (when) emit(c, "JGT R%d, R%d, .L%d", a, b, lab);
+                else { emit(c, "LT 0, R%d, R%d", b, a); emit(c, "JMP .L%d", lab); }
+                break;
+            case TK_LE:
+                if (when) emit(c, "JLE R%d, R%d, .L%d", a, b, lab);
+                else { emit(c, "LE 0, R%d, R%d", a, b); emit(c, "JMP .L%d", lab); }
+                break;
+            default: /* TK_GE */
+                if (when) emit(c, "JGE R%d, R%d, .L%d", a, b, lab);
+                else { emit(c, "LE 0, R%d, R%d", b, a); emit(c, "JMP .L%d", lab); }
+                break;
+            }
+            c->top = mark;
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+
+    {   /* any other value: nil, false and 0 are false, everything else is true */
+        int r = gen(c, e);
+        if (when) {
+            int skip = newlabel(c), z = alloc(c);
+            emit(c, "JF R%d, .L%d", r, skip);
+            emit(c, "LDI R%d, 0", z);
+            emit(c, "JEQ R%d, R%d, .L%d", r, z, skip);
+            emit(c, "JMP .L%d", lab);
+            place(c, skip);
+        } else {
+            int z = alloc(c);
+            emit(c, "JF R%d, .L%d", r, lab);
+            emit(c, "LDI R%d, 0", z);
+            emit(c, "JEQ R%d, R%d, .L%d", r, z, lab);
+        }
+    }
+    c->top = mark;
+}
+
+static void gen_array(cc *c, node *e, int t)
+{
+    node *el;
+    int n = count_nodes(e->a), i = 0;
+
+    if (n > 0) emit(c, "NEWARR R%d, %d", t, n > 255 ? 255 : n);
+    else emit(c, "NEWARR R%d", t);
+    for (el = e->a; el; el = el->next, i++) {
+        int mark = c->top, ri = alloc(c), rv;
+        emit_int(c, ri, i);
+        rv = gen(c, el);
+        emit(c, "SET R%d, R%d, R%d", t, ri, rv);
+        c->top = mark;
+    }
+}
+
+static void gen_map(cc *c, node *e, int t)
+{
+    node *en;
+
+    emit(c, "NEWMAP R%d", t);
+    for (en = e->a; en; en = en->next) {
+        int mark = c->top, rk = gen(c, en->a), rv = gen(c, en->b);
+        emit(c, "SET R%d, R%d, R%d", t, rk, rv);
+        c->top = mark;
+    }
+}
+
+/* scanf(fmt, &a, &b, ...): the host returns the converted values and each
+ * one is stored into its target; the result is the count, or -1 at the end of input */
+static int gen_scanf(cc *c, node *e)
+{
+    node *fmt = e->a, *arg;
+    int t, res, k = 0, lend = newlabel(c), lfail = newlabel(c);
+
+    for (arg = fmt->next; arg; arg = arg->next) {
+        if (arg->kind != N_ADDR) die(c, "the arguments of scanf after the format must be &variable");
+    }
+    t = alloc(c);
+    gen_into(c, fmt, t);
+    emit(c, "HOST R%d, 1, %d", t, LVM_STD_SCAN);
+    res = alloc(c);
+    emit(c, "JF R%d, .L%d", t, lfail);
+    emit(c, "LEN R%d, R%d", res, t);
+    for (arg = fmt->next; arg; arg = arg->next, k++) {
+        int mark = c->top, kk = alloc(c), v = alloc(c);
+        lv target;
+        emit_int(c, kk, k);
+        emit(c, "JLE R%d, R%d, .L%d", res, kk, lend);
+        emit(c, "GET R%d, R%d, R%d", v, t, kk);
+        target = lv_eval(c, arg->a);
+        lv_store(c, target, v);
+        c->top = mark;
+    }
+    emit(c, "JMP .L%d", lend);
+    place(c, lfail);
+    emit(c, "LDI R%d, -1", res);
+    place(c, lend);
+    emit(c, "MOV R%d, R%d", t, res);
+    c->top = t + 1;
+    return t;
+}
+
+/* calls; the result is in the returned register (or in `want` when given) */
+static int gen_call(cc *c, node *e, int want)
+{
+    const builtin *bi;
+    fn *f = find_fn(c, e->str);
+    int argc = count_nodes(e->a), mark = c->top, t, r, i;
+    node *arg;
+
+    c->line = e->line;
+    if (f) {
+        if (argc != f->nparams)
+            die(c, "'%s' takes %d argument(s), got %d", f->name, f->nparams, argc);
+        t = alloc(c);
+        emit(c, "MOV R%d, R0", t); /* every function receives the globals first */
+        for (arg = e->a; arg; arg = arg->next) {
+            r = alloc(c);
+            gen_into(c, arg, r);
+            c->top = r + 1;
+        }
+        emit(c, "CALL R%d, u_%s", t, f->name);
+    } else if ((bi = find_builtin(e->str)) != NULL) {
+        if (argc < bi->min || argc > bi->max) {
+            if (bi->min == bi->max) die(c, "%s takes %d argument(s), got %d", bi->name, bi->min, argc);
+            die(c, "%s takes %d to %d arguments, got %d", bi->name, bi->min, bi->max, argc);
+        }
+        switch (bi->kind) {
+        case B_SCANF:
+            t = gen_scanf(c, e);
+            break;
+        case B_LEN: {
+            int a = gen(c, e->a);
+            c->top = mark;
+            t = alloc(c);
+            emit(c, "LEN R%d, R%d", t, a);
+            break;
+        }
+        case B_PUSH: {
+            int ra = gen(c, e->a), rv = gen(c, e->a->next);
+            t = alloc(c);
+            emit(c, "LEN R%d, R%d", t, ra);
+            emit(c, "SET R%d, R%d, R%d", ra, t, rv);
+            emit(c, "LDNIL R%d", t);
+            break;
+        }
+        case B_REMOVE: {
+            int ra = gen(c, e->a), rk = gen(c, e->a->next);
+            t = alloc(c);
+            emit(c, "LDNIL R%d", t);
+            emit(c, "SET R%d, R%d, R%d", ra, rk, t);
+            break;
+        }
+        default: /* a host function: arguments in consecutive registers from the base */
+            t = c->top;
+            for (i = 0, arg = e->a; arg; arg = arg->next, i++) {
+                r = alloc(c);
+                gen_into(c, arg, r);
+                c->top = r + 1;
+            }
+            if (argc == 0) t = alloc(c);
+            emit(c, "HOST R%d, %d, %d", t, argc, bi->id);
+            break;
+        }
+    } else {
+        die(c, "undefined function '%s'", e->str);
+    }
+
+    if (want >= 0) {
+        if (want != t) emit(c, "MOV R%d, R%d", want, t);
+        c->top = mark;
+        return want;
+    }
+    c->top = t + 1;
+    return t;
+}
+
+static int gen(cc *c, node *e)
+{
+    int mark = c->top, a, b, d;
+
+    c->line = e->line;
+    switch (e->kind) {
+    case N_VAR:
+        a = find_local(c, e->str);
+        if (a >= 0) return a; /* a local is its own register */
+        break;
+    case N_CALL:
+        return gen_call(c, e, -1);
+    case N_BINARY:
+        if (!is_cmp(e)) {
+            a = gen(c, e->a);
+            b = gen(c, e->b);
+            c->top = mark;
+            d = alloc(c);
+            emit(c, "%s R%d, R%d, R%d", binop_name(e->op), d, a, b);
+            return d;
+        }
+        break;
+    case N_UNARY:
+        if (e->op != '!') {
+            a = gen(c, e->a);
+            c->top = mark;
+            d = alloc(c);
+            emit(c, "%s R%d, R%d", e->op == '-' ? "NEG" : "NOT", d, a);
+            return d;
+        }
+        break;
+    case N_INDEX:
+        a = gen(c, e->a);
+        b = gen(c, e->b);
+        c->top = mark;
+        d = alloc(c);
+        emit(c, "GET R%d, R%d, R%d", d, a, b);
+        return d;
+    default:
+        break;
+    }
+    d = alloc(c);
+    gen_into(c, e, d);
+    return d;
+}
+
+static void gen_into(cc *c, node *e, int dst)
+{
+    int mark = c->top, a, b, t;
+
+    c->line = e->line;
+    switch (e->kind) {
+    case N_INT:   emit_int(c, dst, e->ival); break;
+    case N_FLOAT: emit_float(c, dst, e->fval); break;
+    case N_STR:   emit_str(c, dst, e->str, e->slen); break;
+    case N_BOOL:  emit(c, "LDBOOL R%d, %s", dst, e->ival ? "true" : "false"); break;
+    case N_NIL:   emit(c, "LDNIL R%d", dst); break;
+    case N_VAR:
+        a = find_local(c, e->str);
+        if (a >= 0) {
+            if (a != dst) emit(c, "MOV R%d, R%d", dst, a);
+        } else {
+            int g = find_global(c, e->str);
+            if (g < 0) die(c, "undefined variable '%s'", e->str);
+            emit(c, "LDI R%d, %d", dst, g);
+            emit(c, "GET R%d, R0, R%d", dst, dst);
+        }
+        break;
+    case N_INDEX:
+        a = gen(c, e->a);
+        b = gen(c, e->b);
+        emit(c, "GET R%d, R%d, R%d", dst, a, b);
+        break;
+    case N_MEMBER:
+        a = gen(c, e->a);
+        t = alloc(c);
+        emit_str(c, t, e->str, strlen(e->str));
+        emit(c, "GET R%d, R%d, R%d", dst, a, t);
+        break;
+    case N_CALL:
+        gen_call(c, e, dst);
+        break;
+    case N_UNARY:
+        if (e->op == '!') {
+            gen_bool(c, e, dst);
+        } else {
+            a = gen(c, e->a);
+            emit(c, "%s R%d, R%d", e->op == '-' ? "NEG" : "NOT", dst, a);
+        }
+        break;
+    case N_BINARY:
+        if (is_cmp(e)) {
+            gen_bool(c, e, dst);
+        } else {
+            a = gen(c, e->a);
+            b = gen(c, e->b);
+            emit(c, "%s R%d, R%d, R%d", binop_name(e->op), dst, a, b);
+        }
+        break;
+    case N_AND: case N_OR:
+        gen_bool(c, e, dst);
+        break;
+    case N_COND: {
+        int le = newlabel(c), lend = newlabel(c);
+        gen_jump(c, e->a, 0, le);
+        gen_into(c, e->b, dst);
+        emit(c, "JMP .L%d", lend);
+        place(c, le);
+        gen_into(c, e->c, dst);
+        place(c, lend);
+        break;
+    }
+    case N_ASSIGN:
+        a = gen_assign(c, e);
+        if (a != dst) emit(c, "MOV R%d, R%d", dst, a);
+        break;
+    case N_INCDEC:
+        a = gen_incdec(c, e, 1);
+        if (a != dst) emit(c, "MOV R%d, R%d", dst, a);
+        break;
+    case N_CAST: {
+        int id;
+        switch (e->op) {
+        case T_INT: id = LVM_STD_INT; break;
+        case T_FLOAT: id = LVM_STD_FLOAT; break;
+        case T_STRING: id = LVM_STD_STR; break;
+        default: die(c, "this cast is not supported (use int, float or string)");
+        }
+        t = alloc(c);
+        gen_into(c, e->a, t);
+        emit(c, "HOST R%d, 1, %d", t, id);
+        if (t != dst) emit(c, "MOV R%d, R%d", dst, t);
+        break;
+    }
+    case N_ARRAY:
+        t = alloc(c);
+        gen_array(c, e, t);
+        emit(c, "MOV R%d, R%d", dst, t); /* built aside: it may refer to dst itself */
+        break;
+    case N_MAP:
+        t = alloc(c);
+        gen_map(c, e, t);
+        emit(c, "MOV R%d, R%d", dst, t);
+        break;
+    case N_ADDR:
+        die(c, "& can only be used on the arguments of scanf");
+    default:
+        die(c, "internal error: bad expression");
+    }
+    c->top = mark;
 }
