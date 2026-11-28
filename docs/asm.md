@@ -95,6 +95,13 @@ pair for you:
 | `JGT Ra, Rb, .l` | `Ra > Rb` |
 | `JGE Ra, Rb, .l` | `Ra >= Rb` |
 
+## Host functions
+
+`HOST Ra, argc, id` calls host function `id` with `Ra`..`Ra+argc-1`; the
+result replaces `Ra`. `lvmi` installs the standard library (`include/lvm_std.h`
+lists the numbers): 0 is `print`, 1 is `printf`, and so on. `lvc` programs use
+the same functions through their names.
+
 ## Calls
 
 `CALL Ra, f` runs function `f`; its arguments are `Ra`, `Ra+1`, ... and the

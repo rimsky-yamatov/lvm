@@ -7,6 +7,7 @@ Small register-based bytecode VM.
 - 64-bit NaN-boxed values (nil, bool, int48, float64, string, array, map)
 - closures with open/closed upvalues
 - exceptions (`TRY` / `THROW`), including runtime errors
+- a C-like language (`lvcc`) with `printf`, `scanf`, strings, arrays and maps
 - a text assembler (`lvma`) and disassembler (`lvmdis`)
 - precise mark-and-sweep GC
 - bytecode verifier: bad registers, jumps, constants and calls are
@@ -52,6 +53,22 @@ lvm_module_free(&m);
 
 `lvmi file.lvmb` runs a bytecode file; host function 0 prints its arguments.
 
+A small C-like language compiles to bytecode:
+
+```c
+int main() {
+    int n;
+    scanf("%d", &n);
+    printf("%d squared is %d\n", n, n * n);
+    return 0;
+}
+```
+
+```
+lvmi prog.lvc           # compile and run
+lvcc prog.lvc           # compile to prog.lvmb
+```
+
 Assembly source looks like this:
 
 ```
@@ -72,4 +89,5 @@ lvmdis prog.lvmb        # back to assembly
 
 - `docs/format.md` - file format
 - `docs/isa.md` - instructions and verifier rules
+- `docs/lvc.md` - the C-like language
 - `docs/asm.md` - assembly language and disassembler
