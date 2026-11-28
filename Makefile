@@ -33,16 +33,21 @@ tests/test_asm: tests/test_asm.c liblvm.a
 	$(CC) $(CFLAGS) -o $@ tests/test_asm.c liblvm.a -lm
 
 EXAMPLES = $(wildcard examples/*.lvma)
+LVC_EXAMPLES = $(wildcard examples/*.lvc)
 
-test: tests/test_vm tests/test_asm
+tests/test_lvc: tests/test_lvc.c liblvm.a
+	$(CC) $(CFLAGS) -o $@ tests/test_lvc.c liblvm.a -lm
+
+test: tests/test_vm tests/test_asm tests/test_lvc
 	./tests/test_vm
 	./tests/test_asm $(EXAMPLES)
+	./tests/test_lvc $(LVC_EXAMPLES)
 
 # strict C99, switch dispatch only
 portable: clean
 	$(MAKE) CFLAGS="-O2 -pedantic -DLVM_NO_COMPUTED_GOTO" all test
 
 clean:
-	rm -f src/*.o liblvm.a lvmi lvma lvmdis lvcc tests/test_vm tests/test_asm
+	rm -f src/*.o liblvm.a lvmi lvma lvmdis lvcc tests/test_vm tests/test_asm tests/test_lvc
 
 .PHONY: all test portable clean

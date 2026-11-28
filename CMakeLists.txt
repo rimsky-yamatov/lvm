@@ -56,6 +56,11 @@ target_link_libraries(test_asm PRIVATE lvm)
 file(GLOB LVM_EXAMPLES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/examples/*.lvma)
 add_test(NAME asm COMMAND test_asm ${LVM_EXAMPLES})
 
+add_executable(test_lvc tests/test_lvc.c)
+target_link_libraries(test_lvc PRIVATE lvm)
+file(GLOB LVC_EXAMPLES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/examples/*.lvc)
+add_test(NAME lvc COMMAND test_lvc ${LVC_EXAMPLES})
+
 install(TARGETS lvmi lvma lvmdis lvcc lvm RUNTIME DESTINATION bin ARCHIVE DESTINATION lib)
 install(FILES include/lvm.h include/lvm_value.h include/lvm_opcode.h DESTINATION include)
 install(FILES README.md docs/isa.md docs/format.md docs/asm.md DESTINATION share/doc/lvm)

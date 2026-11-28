@@ -8,3 +8,4 @@
 *.lvmb
 /lvmdis
 /lvcc
+/tests/test_lvc
