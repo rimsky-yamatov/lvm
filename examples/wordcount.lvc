@@ -1,0 +1,26 @@
+// output: brown: 1
+// output: dog: 1
+// output: end: 1
+// output: fox: 1
+// output: jumps: 1
+// output: lazy: 1
+// output: over: 1
+// output: quick: 1
+// output: the: 3
+// a map from word to count; keys() returns them in no particular order, so sort them
+int main() {
+    string text = "the quick brown fox jumps over the lazy dog the end";
+    var words = split(text, " ");
+    var counts = map();
+    for (int i = 0; i < len(words); i++) {
+        string w = words[i];
+        if (counts[w] == nil) counts[w] = 0;
+        counts[w] += 1;
+    }
+    var ks = keys(counts);
+    sort(ks);
+    for (int i = 0; i < len(ks); i++) {
+        printf("%s: %d\n", ks[i], counts[ks[i]]);
+    }
+    return 0;
+}

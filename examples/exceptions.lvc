@@ -1,0 +1,31 @@
+// output: 5
+// output: error: divide by zero!
+// output: runtime: division by zero
+// output: runtime: index out of bounds
+int safe_div(int a, int b) {
+    if (b == 0) throw "divide by zero!";
+    return a / b;
+}
+
+int main() {
+    try {
+        printf("%d\n", safe_div(10, 2));
+        printf("%d\n", safe_div(1, 0));
+        printf("not reached\n");
+    } catch (e) {
+        printf("error: %s\n", e);
+    }
+    try {
+        int zero = 0;
+        int x = 5 / zero;
+    } catch (e) {
+        printf("runtime: %s\n", e);
+    }
+    try {
+        var a = [1, 2];
+        printf("%d\n", a[5]);
+    } catch (e) {
+        printf("runtime: %s\n", e);
+    }
+    return 0;
+}

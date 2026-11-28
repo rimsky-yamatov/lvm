@@ -1,0 +1,25 @@
+// output: level -> level, palindrome: 1
+// output: hello -> olleh, palindrome: 0
+// output: 3 parts, last = c
+// output: Hello, World! (13 bytes)
+string reverse(string s) {
+    string r = "";
+    for (int i = len(s) - 1; i >= 0; i--) r += chr(s[i]);
+    return r;
+}
+
+bool is_palindrome(string s) {
+    return s == reverse(s);
+}
+
+int main() {
+    string words[2] = {"level", "hello"};
+    for (int i = 0; i < 2; i++) {
+        printf("%s -> %s, palindrome: %d\n", words[i], reverse(words[i]), is_palindrome(words[i]));
+    }
+    var parts = split("a,b,c", ",");
+    printf("%d parts, last = %s\n", len(parts), parts[len(parts) - 1]);
+    string greeting = "Hello" + ", " + "World!";
+    printf("%s (%d bytes)\n", greeting, len(greeting));
+    return 0;
+}

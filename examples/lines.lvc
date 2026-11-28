@@ -1,0 +1,16 @@
+// input: hello
+// input: lvc world
+// output: 1: hello
+// output: 2: lvc world
+// output: 2 lines
+// readline() returns nil at the end of the input
+int main() {
+    int n = 0;
+    string line;
+    while ((line = readline()) != nil) {
+        n++;
+        printf("%d: %s\n", n, line);
+    }
+    printf("%d lines\n", n);
+    return 0;
+}

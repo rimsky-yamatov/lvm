@@ -1,0 +1,24 @@
+// output: 5 4 3
+// output: sp=0
+// a stack built from two global variables
+int stack[100];
+int sp = 0;
+
+void spush(int v) {
+    stack[sp] = v;
+    sp++;
+}
+
+int spop() {
+    sp--;
+    return stack[sp];
+}
+
+int main() {
+    spush(3);
+    spush(4);
+    spush(5);
+    printf("%d %d %d\n", spop(), spop(), spop());
+    printf("sp=%d\n", sp);
+    return 0;
+}
